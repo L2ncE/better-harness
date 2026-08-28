@@ -121,6 +121,20 @@ async function surfacesFor(page) {
       },
     },
     {
+      label: "session-usage",
+      enter: async () => {
+        const process = page.locator("details.session-process").first();
+        if ((await process.count()) > 0 && !await process.evaluate((element) => element.open)) {
+          await process.locator(":scope > summary").click();
+        }
+        const usage = page.locator(".session-usage-disclosure > summary").first();
+        if ((await usage.count()) === 0) return "skip";
+        await usage.click();
+        await page.waitForTimeout(300);
+        return undefined;
+      },
+    },
+    {
       label: "session-replay",
       enter: async () => {
         const replay = page.locator(".session-mode-tabs button", { hasText: "Replay" }).first();

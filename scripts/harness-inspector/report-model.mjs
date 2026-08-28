@@ -259,6 +259,20 @@ function projectDialogue(dialogue, toolActivity) {
         const text = safeText(step.text, 400);
         return text ? { kind: "note", text } : null;
       }
+      if (step?.kind === "usage") {
+        const tokenUsage = projectInvocationTokenUsage(step.tokenUsage);
+        const contextUsage = projectContextWindowUsage(step.contextUsage);
+        if (!tokenUsage && !contextUsage) return null;
+        return {
+          kind: "usage",
+          ...(tokenUsage ? { tokenUsage } : {}),
+          ...(contextUsage ? { contextUsage } : {}),
+          ...(step.basis ? { basis: safeText(step.basis, 40) } : {}),
+          ...(step.source ? { source: safeText(step.source, 80) } : {}),
+          ...(step.model ? { model: safeText(step.model, 80) } : {}),
+          timestamp: step.timestamp ?? null,
+        };
+      }
       if (step?.kind !== "tool") return null;
       const callStep = Number(step.callStep);
       const call = callsByStep.get(callStep);
@@ -283,6 +297,12 @@ function projectDialogue(dialogue, toolActivity) {
     const intermediateCount = Number.isInteger(turn?.intermediateCount)
       ? turn.intermediateCount
       : steps.filter((step) => step.kind === "note").length;
+    const usageEventCount = Number.isInteger(turn?.usageEventCount)
+      ? turn.usageEventCount
+      : steps.filter((step) => step.kind === "usage").length;
+    const derivedEventCount = intermediateCount
+      + steps.filter((step) => step.kind === "tool").length
+      + usageEventCount;
     return {
       index: Number(turn?.index) || index + 1,
       anchorId: `turn-${Number(turn?.index) || index + 1}`,
@@ -291,9 +311,10 @@ function projectDialogue(dialogue, toolActivity) {
       toolCallCount: Number(turn?.toolCallCount) || steps.filter((step) => step.kind === "tool").length,
       messageCount: Number(turn?.messageCount) || 0,
       intermediateCount,
+      usageEventCount,
       eventCount: Number.isInteger(turn?.eventCount)
-        ? turn.eventCount
-        : intermediateCount + steps.filter((step) => step.kind === "tool").length,
+        ? Math.max(turn.eventCount, derivedEventCount)
+        : derivedEventCount,
       shownEventCount: Number.isInteger(turn?.shownEventCount) ? turn.shownEventCount : steps.length,
       processTruncated: turn?.processTruncated === true,
       response,
@@ -356,6 +377,88 @@ function turnCoverage(session, prompts, dialogue) {
   };
 }
 
+function nonNegativeNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+function projectTokenUsage(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const projected = {
+    inputTokens: nonNegativeNumber(usage.inputTokens),
+    outputTokens: nonNegativeNumber(usage.outputTokens),
+    cacheReadInputTokens: nonNegativeNumber(usage.cacheReadInputTokens),
+  };
+  for (const field of ["cacheCreationInputTokens", "reasoningOutputTokens", "totalTokens"]) {
+    if (Object.hasOwn(usage, field)) projected[field] = nonNegativeNumber(usage[field]);
+  }
+  projected.basis = safeText(usage.basis, 40, "model-inference");
+  projected.source = safeText(usage.source, 80, "normalized-session-events");
+  projected.coverage = ["observed", "partial", "unobserved"].includes(usage.coverage)
+    ? usage.coverage
+    : "observed";
+  return projected;
+}
+
+function projectInvocationTokenUsage(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const projected = {};
+  for (const field of [
+    "inputTokens",
+    "outputTokens",
+    "cacheReadInputTokens",
+    "cacheCreationInputTokens",
+    "reasoningOutputTokens",
+    "totalTokens",
+  ]) {
+    if (Object.hasOwn(usage, field)) projected[field] = nonNegativeNumber(usage[field]);
+  }
+  return Object.keys(projected).length > 0 ? projected : null;
+}
+
+function projectContextWindowUsage(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const usedTokens = Number(usage.usedTokens);
+  const windowTokens = Number(usage.windowTokens);
+  if (!Number.isFinite(usedTokens) || usedTokens < 0 || !Number.isFinite(windowTokens) || windowTokens <= 0) return null;
+  return {
+    usedTokens: Math.round(usedTokens),
+    windowTokens: Math.round(windowTokens),
+    percentFull: Math.min(100, Math.round((usedTokens / windowTokens) * 1_000) / 10),
+  };
+}
+
+function projectRuntime(runtime) {
+  if (!runtime || typeof runtime !== "object") return null;
+  const projected = Object.fromEntries(["modelProvider", "cliVersion", "effort"]
+    .map((field) => [field, safeText(runtime[field], 80)])
+    .filter(([_field, value]) => value));
+  return Object.keys(projected).length > 0 ? projected : null;
+}
+
+function projectContextManifest(manifest) {
+  if (!manifest || typeof manifest !== "object") return null;
+  const projected = {
+    status: ["observed", "partial", "unobserved"].includes(manifest.status) ? manifest.status : "partial",
+    source: safeText(manifest.source, 80, "normalized-context-events"),
+    rawTextOmitted: true,
+    compactionCount: Math.round(nonNegativeNumber(manifest.compactionCount)),
+    layers: (Array.isArray(manifest.layers) ? manifest.layers : []).slice(0, 16).map((layer) => ({
+      kind: safeText(layer?.kind, 80, "other"),
+      itemCount: Math.round(nonNegativeNumber(layer?.itemCount)),
+    })),
+    categories: (Array.isArray(manifest.categories) ? manifest.categories : []).slice(0, 20).map((category) => ({
+      kind: safeText(category?.kind, 80, "other"),
+      label: safeText(category?.label, 120, "Other"),
+      estimatedTokens: Math.round(nonNegativeNumber(category?.estimatedTokens)),
+    })),
+  };
+  if (Number.isFinite(Number(manifest.usedTokens))) projected.usedTokens = Math.round(nonNegativeNumber(manifest.usedTokens));
+  if (Number.isFinite(Number(manifest.windowTokens))) projected.windowTokens = Math.round(nonNegativeNumber(manifest.windowTokens));
+  if (Number.isFinite(Number(manifest.percentFull))) projected.percentFull = Math.min(100, Math.round(nonNegativeNumber(manifest.percentFull)));
+  return projected;
+}
+
 function projectSession(session) {
   const sessionId = safeLocator(session.sessionId);
   if (!sessionId) return null;
@@ -391,11 +494,12 @@ function projectSession(session) {
     assistantMessageCount: Number(session.assistantMessageCount) || 0,
     fileEditCount: Number(session.fileEditCount) || 0,
     models: (session.models ?? []).map((model) => safeText(model, 80)).filter(Boolean),
-    tokenUsage: session.tokenUsage && typeof session.tokenUsage === "object" ? {
-      inputTokens: Number(session.tokenUsage.inputTokens) || 0,
-      outputTokens: Number(session.tokenUsage.outputTokens) || 0,
-      cacheReadInputTokens: Number(session.tokenUsage.cacheReadInputTokens) || 0,
-    } : null,
+    tokenUsage: projectTokenUsage(session.tokenUsage),
+    runtime: projectRuntime(session.runtime),
+    contextManifest: projectContextManifest(session.contextManifest),
+    timestampBasis: ["native-event", "native-metadata", "source-file-mtime", "unobserved"].includes(session.timestampBasis)
+      ? session.timestampBasis
+      : "unobserved",
     toolTrace,
     toolActivity,
     dialogue,
