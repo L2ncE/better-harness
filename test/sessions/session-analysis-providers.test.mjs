@@ -312,6 +312,12 @@ test("Claude provider expands nested tool requests and results without using gen
   assert.equal(events.find((event) => event.model === "claude-fixture")?.modelInvocationUsage.outputTokens, 4);
   assert.equal(events.find((event) => event.model === "claude-fixture")?.modelUsage.cacheCreationInputTokens, 3);
   assert.equal(events.find((event) => event.model === "claude-fixture")?.usageSource, "claude-project-transcript");
+  assert.deepEqual(events.find((event) => event.model === "claude-fixture")?.currentContextUsage, {
+    usedTokens: 18,
+    basis: "prompt-tokens",
+    source: "claude-project-transcript",
+    rawTextOmitted: true,
+  });
   assert.equal(events.find((event) => event.toolInvocationId === "tool-2")?.filePath, path.join(workspace, "package.json"));
   assert.equal(events.find((event) => event.toolInvocationId === "tool-2" && event.type === "tool.result")?.success, false);
   const insights = await analyzer.analyze({ command: "insights", workspace, home, selection: "all-eligible" });
@@ -621,6 +627,7 @@ test("Cursor keeps timestamp-unobserved transcripts with labelled source time an
   assert.deepEqual(context?.currentContextUsage, {
     usedTokens: 250,
     windowTokens: 1_000,
+    basis: "host-context-snapshot",
     source: "cursor-native-context-usage-canvas",
     rawTextOmitted: true,
   });

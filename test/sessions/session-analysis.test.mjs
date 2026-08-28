@@ -591,6 +591,7 @@ test("Qoder and Codex preserve only explicit user-visible handoff and delivery f
   assert.deepEqual(codexUsage.currentContextUsage, {
     usedTokens: 40,
     windowTokens: 200,
+    basis: "prompt-tokens",
     source: "codex-rollout-token-count",
     rawTextOmitted: true,
   });
@@ -868,6 +869,62 @@ test("Qoder analyzer discovers source roots and merges source coverage by sessio
     assert.equal(session.coverage.executionEvents, true);
     assert.equal(session.coverage.conversation, true);
     assert.equal(session.coverage.state, true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Qoder preserves host context ratio, real session window, and compaction boundaries", async () => {
+  const fixture = await makeQoderFixture();
+  const analyzer = new QoderSessionAnalyzer();
+  await writeQoderConversation(fixture.home, fixture.slug, fixture.sessionId, [
+    {
+      type: "runtime-config",
+      sessionId: fixture.sessionId,
+      timestamp: "2026-06-18T10:00:00.000Z",
+      contextWindow: 1_000_000,
+    },
+    {
+      type: "assistant",
+      sessionId: fixture.sessionId,
+      timestamp: "2026-06-18T10:00:04.000Z",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "done" }],
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          context_usage_ratio: 0.060373,
+        },
+      },
+    },
+    {
+      type: "system",
+      sessionId: fixture.sessionId,
+      timestamp: "2026-06-18T10:00:05.000Z",
+      compactMetadata: { preTokens: 147_770, postTokens: 2_431 },
+    },
+  ]);
+
+  try {
+    const scope = await analyzer.resolveScope({ home: fixture.home, workspace: fixture.workspace });
+    const roots = await analyzer.discoverSourceRoots(scope);
+    const sessions = await analyzer.discoverSessions(scope, roots);
+    const session = sessions.find((candidate) => candidate.sessionId === fixture.sessionId);
+    assert.ok(session);
+    const events = await analyzer.readSession(session, scope);
+    const response = events.find((event) => event.currentContextUsage?.percentFull !== undefined);
+    assert.deepEqual(response?.currentContextUsage, {
+      percentFull: 6.0373,
+      basis: "host-context-ratio",
+      source: "qoder-project-context-ratio",
+      rawTextOmitted: true,
+      usedTokens: 60_373,
+      windowTokens: 1_000_000,
+    });
+    assert.equal(events.filter((event) => event.compactionBoundary === true).length, 1);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

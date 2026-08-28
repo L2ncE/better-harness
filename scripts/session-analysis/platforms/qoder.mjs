@@ -410,6 +410,43 @@ function inferModelUsage(raw) {
   return observed ? usage : null;
 }
 
+function inferContextUsageRatio(raw) {
+  const value = Number(raw?.message?.usage?.context_usage_ratio ?? raw?.data?.message?.usage?.context_usage_ratio);
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
+}
+
+function inferContextWindowTokens(raw) {
+  const value = Number(raw?.contextWindow ?? raw?.data?.contextWindow);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function enrichQoderContextUsage(events) {
+  const observedWindows = [...new Set(events.map((event) => event.observedContextWindowTokens)
+    .filter((value) => Number.isFinite(value) && value > 0))];
+  const sessionWindow = observedWindows.length === 1 ? observedWindows[0] : null;
+  let currentWindow = sessionWindow;
+  return events.map((event) => {
+    if (Number.isFinite(event.observedContextWindowTokens) && event.observedContextWindowTokens > 0) {
+      currentWindow = event.observedContextWindowTokens;
+    }
+    const context = event.currentContextUsage;
+    if (!context || !Number.isFinite(context.percentFull)) return event;
+    const windowTokens = Number.isFinite(context.windowTokens) && context.windowTokens > 0
+      ? context.windowTokens
+      : currentWindow;
+    return {
+      ...event,
+      currentContextUsage: {
+        ...context,
+        ...(Number.isFinite(windowTokens) && windowTokens > 0 ? {
+          usedTokens: Math.round((context.percentFull / 100) * windowTokens),
+          windowTokens: Math.round(windowTokens),
+        } : {}),
+      },
+    };
+  });
+}
+
 function inferCwd(raw) {
   return raw?.cwd ?? raw?.data?.cwd ?? raw?.workspace ?? raw?.data?.workspace ?? null;
 }
@@ -1447,6 +1484,8 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
     const stopReason = inferStopReason(raw);
     const isSubagent = inferIsSubagent(raw);
     const modelUsage = inferModelUsage(raw);
+    const contextUsageRatio = inferContextUsageRatio(raw);
+    const contextWindowTokens = inferContextWindowTokens(raw);
     const cwd = inferCwd(raw);
     const phase = lifecyclePhase(type);
     const auditLifecycle = isAuditLifecycle(sourceRef.kind);
@@ -1512,7 +1551,26 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
     }
     if (modelUsage) {
       event.modelUsage = modelUsage;
+      event.modelInvocationUsage = modelUsage;
       event.usageFieldsObserved = true;
+      event.usageBasis = "model-inference";
+      event.usageSource = "qoder-project-transcript";
+    }
+    if (contextUsageRatio !== null) {
+      event.currentContextUsage = {
+        // Keep enough provider precision to derive an absolute token count when
+        // a real session window is also retained. Presentation layers round it.
+        percentFull: contextUsageRatio * 100,
+        basis: "host-context-ratio",
+        source: "qoder-project-context-ratio",
+        rawTextOmitted: true,
+      };
+    }
+    if (contextWindowTokens !== null) {
+      event.observedContextWindowTokens = contextWindowTokens;
+    }
+    if (raw?.compactMetadata && typeof raw.compactMetadata === "object") {
+      event.compactionBoundary = true;
     }
     if (cwd) {
       event.cwd = cwd;
@@ -1681,7 +1739,7 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
         }
         return (a.evidenceRef.line ?? a.evidenceRef.seq ?? 0) - (b.evidenceRef.line ?? b.evidenceRef.seq ?? 0);
       });
-    return markSessionReadCoverage(sorted, { truncated });
+    return markSessionReadCoverage(enrichQoderContextUsage(sorted), { truncated });
   }
 
   async readJsonlEvents(sessionId, scope, ref, events, options, { workspaceLinked = false } = {}) {

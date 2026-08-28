@@ -107,8 +107,11 @@ function inferenceUsageStep(event) {
   }
   const usedTokens = Number(event?.currentContextUsage?.usedTokens);
   const windowTokens = Number(event?.currentContextUsage?.windowTokens);
-  const hasContext = Number.isFinite(usedTokens) && usedTokens >= 0
-    && Number.isFinite(windowTokens) && windowTokens > 0;
+  const percentFull = Number(event?.currentContextUsage?.percentFull);
+  const hasUsedTokens = Number.isFinite(usedTokens) && usedTokens >= 0;
+  const hasWindowTokens = Number.isFinite(windowTokens) && windowTokens > 0;
+  const hasPercentFull = Number.isFinite(percentFull) && percentFull >= 0 && percentFull <= 100;
+  const hasContext = hasUsedTokens || hasWindowTokens || hasPercentFull;
   if (Object.keys(tokenUsage).length === 0 && !hasContext) return null;
   const evidenceSource = event?.usageSource ?? event?.currentContextUsage?.source ?? null;
   return {
@@ -116,9 +119,13 @@ function inferenceUsageStep(event) {
     ...(Object.keys(tokenUsage).length > 0 ? { tokenUsage } : {}),
     ...(hasContext ? {
       contextUsage: {
-        usedTokens: Math.round(usedTokens),
-        windowTokens: Math.round(windowTokens),
-        percentFull: Math.min(100, Math.round((usedTokens / windowTokens) * 1_000) / 10),
+        ...(hasUsedTokens ? { usedTokens: Math.round(usedTokens) } : {}),
+        ...(hasWindowTokens ? { windowTokens: Math.round(windowTokens) } : {}),
+        ...(hasPercentFull ? { percentFull: Math.round(percentFull * 10) / 10 }
+          : hasUsedTokens && hasWindowTokens
+            ? { percentFull: Math.min(100, Math.round((usedTokens / windowTokens) * 1_000) / 10) }
+            : {}),
+        ...(event?.currentContextUsage?.basis ? { basis: String(event.currentContextUsage.basis) } : {}),
       },
     } : {}),
     ...(event?.usageBasis ? { basis: String(event.usageBasis) } : {}),

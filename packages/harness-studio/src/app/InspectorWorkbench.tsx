@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   filteredCallCount,
@@ -15,7 +15,7 @@ import {
 } from "./inspector-session-model.js";
 
 type Mode = "feature" | "date";
-type ViewMode = "trace" | "replay";
+type ViewMode = "trace" | "replay" | "usage";
 
 interface FeatureNode {
   id: string;
@@ -275,7 +275,10 @@ function DeliveryLane({ commits }: { commits: Commit[] }): React.JSX.Element {
 }
 
 function SessionView({ workspaceName, session, commits, onClose }: { workspaceName: string; session: Session; commits: Commit[]; onClose(): void }): React.JSX.Element {
-  const [mode, setModeState] = useState<ViewMode>(() => new URL(globalThis.location.href).searchParams.get("inspector-view") === "replay" ? "replay" : "trace");
+  const [mode, setModeState] = useState<ViewMode>(() => {
+    const requested = new URL(globalThis.location.href).searchParams.get("inspector-view");
+    return requested === "replay" || requested === "usage" ? requested : "trace";
+  });
   const view = useRef<HTMLElement>(null);
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent): void => { if (event.key === "Escape") onClose(); };
@@ -285,20 +288,21 @@ function SessionView({ workspaceName, session, commits, onClose }: { workspaceNa
   useEffect(() => { if (view.current) view.current.scrollTop = 0; }, [mode]);
   function setMode(next: ViewMode): void {
     const url = new URL(globalThis.location.href);
-    if (next === "replay") url.searchParams.set("inspector-view", "replay");
+    if (next === "replay" || next === "usage") url.searchParams.set("inspector-view", next);
     else {
       url.searchParams.delete("inspector-view");
       url.searchParams.delete("inspector-event");
     }
+    if (next !== "replay") url.searchParams.delete("inspector-event");
     globalThis.history.replaceState(globalThis.history.state, "", url);
     setModeState(next);
   }
-  return <section ref={view} className="session-view" role="dialog" aria-modal="true" aria-labelledby="session-view-title"><header className="session-nav"><nav className="session-crumbs" aria-label="Session breadcrumb"><span>{workspaceName}</span><i>/</i><span>Sessions</span><i>/</i><strong>{sessionTitle(session)}</strong></nav><button className="session-close" type="button" autoFocus onClick={onClose}>Close</button></header><div className="session-shell"><header className="session-titlebar"><div className="session-notebook-brand"><strong>Harness Inspector</strong></div><div className="session-title-copy"><small>{session.platform ?? "agent"} · retained Session</small><h2 id="session-view-title">{sessionTitle(session)}</h2></div><div className="session-title-actions"><div className="session-mode-tabs" role="tablist" aria-label="Session view mode"><button id="react-session-tab-trace" role="tab" aria-controls="react-session-panel-trace" aria-selected={mode === "trace"} tabIndex={mode === "trace" ? 0 : -1} onClick={() => setMode("trace")} onKeyDown={(event) => moveInspectorTab(event, "replay", setMode)}>Trace</button><button id="react-session-tab-replay" role="tab" aria-controls="react-session-panel-replay" aria-selected={mode === "replay"} tabIndex={mode === "replay" ? 0 : -1} onClick={() => setMode("replay")} onKeyDown={(event) => moveInspectorTab(event, "trace", setMode)}>Replay</button></div></div></header>{mode === "trace" ? <SessionTrace session={session} commits={commits} /> : <SessionReplay session={session} />}</div></section>;
+  return <section ref={view} className="session-view" role="dialog" aria-modal="true" aria-labelledby="session-view-title"><header className="session-nav"><nav className="session-crumbs" aria-label="Session breadcrumb"><span>{workspaceName}</span><i>/</i><span>Sessions</span><i>/</i><strong>{sessionTitle(session)}</strong></nav><button className="session-close" type="button" autoFocus onClick={onClose}>Close</button></header><div className="session-shell"><header className="session-titlebar"><div className="session-notebook-brand"><strong>Harness Inspector</strong></div><div className="session-title-copy"><small>{session.platform ?? "agent"} · retained Session</small><h2 id="session-view-title">{sessionTitle(session)}</h2></div><div className="session-title-actions">{mode === "usage" ? <button className="usage-report-return" type="button" onClick={() => setMode("trace")}>Back to Trace</button> : <div className="session-mode-tabs" role="tablist" aria-label="Session view mode"><button id="react-session-tab-trace" role="tab" aria-controls="react-session-panel-trace" aria-selected={mode === "trace"} tabIndex={mode === "trace" ? 0 : -1} onClick={() => setMode("trace")} onKeyDown={(event) => moveInspectorTab(event, "replay", setMode)}>Trace</button><button id="react-session-tab-replay" role="tab" aria-controls="react-session-panel-replay" aria-selected={mode === "replay"} tabIndex={mode === "replay" ? 0 : -1} onClick={() => setMode("replay")} onKeyDown={(event) => moveInspectorTab(event, "trace", setMode)}>Replay</button></div>}</div></header>{mode === "trace" ? <SessionTrace session={session} commits={commits} onViewUsage={() => setMode("usage")} /> : mode === "replay" ? <SessionReplay session={session} /> : <SessionUsageReport session={session} />}</div></section>;
 }
 
 type EvidenceKind = "prompts" | "responses" | "intermediate" | "usage" | "commits" | "tools";
 
-function SessionTrace({ session, commits }: { session: Session; commits: Commit[] }): React.JSX.Element {
+function SessionTrace({ session, commits, onViewUsage }: { session: Session; commits: Commit[]; onViewUsage(): void }): React.JSX.Element {
   const projection = useMemo(() => projectSessionTrace(session, commits), [session, commits]);
   const turns = projection.turns;
   const calls = session.toolActivity?.calls ?? [];
@@ -332,36 +336,112 @@ function SessionTrace({ session, commits }: { session: Session; commits: Commit[
     {(projection.unplacedCalls.length > 0 || projection.unplacedFiles.length > 0) && <section className="session-cell session-unplaced" data-session-cell="unplaced" ref={(node) => { if (node) cellRefs.current.set("unplaced", node); else cellRefs.current.delete("unplaced"); }}><header className="session-turn-head"><strong>Unplaced evidence</strong><span>{projection.unplacedCalls.length} calls · {projection.unplacedFiles.length} files</span></header><div className="session-cell-marker"><span>[ ]</span></div><section className="session-turn">{kinds.has("tools") && <ToolList calls={projection.unplacedCalls.filter((call) => enabledTools.has(call.toolName ?? call.operation ?? "tool"))} showFiles={showFiles} />}{showFiles && projection.unplacedFiles.length > 0 && <article className="session-event files"><header className="session-event-head"><strong>{projection.unplacedFiles.length} attributed file paths</strong><span>observed tool evidence</span></header><div className="session-file-list">{projection.unplacedFiles.map((file) => <code key={file}>{file}</code>)}</div></article>}</section></section>}
     {kinds.has("commits") && projection.outsideCommits.length > 0 && <section className="session-cell session-outside" data-session-cell="outside" ref={(node) => { if (node) cellRefs.current.set("outside", node); else cellRefs.current.delete("outside"); }}><header className="session-turn-head"><strong>Commits outside Turn windows</strong><span>{projection.outsideCommits.length} commits</span></header><div className="session-cell-marker"><span>[ ]</span></div><section className="session-turn"><div className="session-outside-note">Timestamps fall outside every observed Turn window.</div>{projection.outsideCommits.map(({ commit, relation }) => <CommitEvent commit={commit} relation={relation} key={commit.hash} />)}</section></section>}
     {calls.length > 0 && <SessionActivity calls={calls} />}
-  </div></main><aside className="session-sidebar" aria-label="Session outline"><header><div><strong>Session outline</strong><span>Read-only</span></div></header><section><h3>Cells</h3><select className="jump-select" aria-label="Jump to Session cell" defaultValue={turns[0]?.turn.anchorId ?? `turn-${turns[0]?.turn.index ?? 1}`} onChange={(event) => jumpTo(event.target.value)}>{turns.map(({ turn }) => <option value={turn.anchorId ?? `turn-${turn.index}`} key={turn.index}>In [{turn.index}]</option>)}{(projection.unplacedCalls.length > 0 || projection.unplacedFiles.length > 0) && <option value="unplaced">Unplaced evidence</option>}{projection.outsideCommits.length > 0 && <option value="outside">Commits outside Turn windows</option>}</select><div className="session-bulk"><button type="button" onClick={() => setAllProcesses(true)}>Expand process</button><button type="button" onClick={() => setAllProcesses(false)}>Collapse process</button></div></section><details className="session-filter-disclosure"><summary><span>Evidence filters</span><em>{visibleCalls} calls</em></summary><div className="session-filter-list"><Filter label="Prompts" count={turns.length} checked={kinds.has("prompts")} onChange={() => toggleKind("prompts")} /><Filter label="Results" count={responseCount} checked={kinds.has("responses")} onChange={() => toggleKind("responses")} /><Filter label="Intermediate" count={noteCount} checked={kinds.has("intermediate")} onChange={() => toggleKind("intermediate")} /><Filter label="Model usage" count={usageCount} checked={kinds.has("usage")} onChange={() => toggleKind("usage")} /><Filter label="Commits" count={commits.length} checked={kinds.has("commits")} onChange={() => toggleKind("commits")} /><Filter label="Tool calls" count={visibleCalls} checked={kinds.has("tools")} onChange={() => toggleKind("tools")} />{toolNames.slice(0, 8).map((name) => <Filter subtype label={name} count={calls.filter((call) => (call.toolName ?? call.operation ?? "tool") === name).length} checked={enabledTools.has(name)} onChange={() => toggleTool(name)} key={name} />)}<Filter subtype label="File paths" count={session.toolActivity?.files?.length ?? session.files?.length ?? 0} checked={showFiles} onChange={() => setShowFiles((value) => !value)} /></div></details><section className="session-outline-facts"><h3>Session</h3><dl><div><dt>Source</dt><dd>{session.source === "entire-checkpoint" ? "Entire checkpoint" : "Native session"}</dd></div><div><dt>Runtime</dt><dd>{session.platform ?? "unknown"}</dd></div><div><dt>Model</dt><dd>{session.models?.join(", ") || "unavailable"}</dd></div><div><dt>Duration</dt><dd>{formatDuration(session.durationMs)}</dd></div><div><dt>Turns</dt><dd>{turns.length}</dd></div><div><dt>Tool calls</dt><dd>{calls.length}</dd></div><div><dt>File edits</dt><dd>{session.fileEditCount ?? 0}</dd></div><div><dt>Token usage</dt><dd>{formatTokenUsage(session.tokenUsage)}</dd></div>{session.dialogue?.truncated && <div><dt>Projection</dt><dd>Truncated</dd></div>}</dl></section><UsageContextFacts session={session} /></aside></div></section>;
+  </div></main><aside className="session-sidebar" aria-label="Session outline"><header><div><strong>Session outline</strong><span>Read-only</span></div></header><section><h3>Cells</h3><select className="jump-select" aria-label="Jump to Session cell" defaultValue={turns[0]?.turn.anchorId ?? `turn-${turns[0]?.turn.index ?? 1}`} onChange={(event) => jumpTo(event.target.value)}>{turns.map(({ turn }) => <option value={turn.anchorId ?? `turn-${turn.index}`} key={turn.index}>In [{turn.index}]</option>)}{(projection.unplacedCalls.length > 0 || projection.unplacedFiles.length > 0) && <option value="unplaced">Unplaced evidence</option>}{projection.outsideCommits.length > 0 && <option value="outside">Commits outside Turn windows</option>}</select><div className="session-bulk"><button type="button" onClick={() => setAllProcesses(true)}>Expand process</button><button type="button" onClick={() => setAllProcesses(false)}>Collapse process</button></div></section><details className="session-filter-disclosure"><summary><span>Evidence filters</span><em>{visibleCalls} calls</em></summary><div className="session-filter-list"><Filter label="Prompts" count={turns.length} checked={kinds.has("prompts")} onChange={() => toggleKind("prompts")} /><Filter label="Results" count={responseCount} checked={kinds.has("responses")} onChange={() => toggleKind("responses")} /><Filter label="Intermediate" count={noteCount} checked={kinds.has("intermediate")} onChange={() => toggleKind("intermediate")} /><Filter label="Model usage" count={usageCount} checked={kinds.has("usage")} onChange={() => toggleKind("usage")} /><Filter label="Commits" count={commits.length} checked={kinds.has("commits")} onChange={() => toggleKind("commits")} /><Filter label="Tool calls" count={visibleCalls} checked={kinds.has("tools")} onChange={() => toggleKind("tools")} />{toolNames.slice(0, 8).map((name) => <Filter subtype label={name} count={calls.filter((call) => (call.toolName ?? call.operation ?? "tool") === name).length} checked={enabledTools.has(name)} onChange={() => toggleTool(name)} key={name} />)}<Filter subtype label="File paths" count={session.toolActivity?.files?.length ?? session.files?.length ?? 0} checked={showFiles} onChange={() => setShowFiles((value) => !value)} /></div></details><section className="session-outline-facts"><h3>Session</h3><dl><div><dt>Source</dt><dd>{session.source === "entire-checkpoint" ? "Entire checkpoint" : "Native session"}</dd></div><div><dt>Runtime</dt><dd>{session.platform ?? "unknown"}</dd></div><div><dt>Model</dt><dd>{session.models?.join(", ") || "unavailable"}</dd></div><div><dt>Duration</dt><dd>{formatDuration(session.durationMs)}</dd></div><div><dt>Turns</dt><dd>{turns.length}</dd></div><div><dt>Tool calls</dt><dd>{calls.length}</dd></div><div><dt>File edits</dt><dd>{session.fileEditCount ?? 0}</dd></div>{session.dialogue?.truncated && <div><dt>Projection</dt><dd>Truncated</dd></div>}</dl></section><UsageContextSummary session={session} onViewReport={onViewUsage} /></aside></div></section>;
 }
 
-function UsageContextFacts({ session }: { session: Session }): React.JSX.Element {
-  const usage = session.tokenUsage;
+interface ContextSegment {
+  kind: string;
+  label: string;
+  tokens: number;
+  colorIndex: number;
+}
+
+interface UsageObservation {
+  index: number;
+  step: ToolCall;
+}
+
+function usageContextPresentation(session: Session): {
+  segments: ContextSegment[];
+  unusedTokens: number;
+  hasCategoryBreakdown: boolean;
+  hasContextWindow: boolean;
+  hasUsedTokens: boolean;
+  hasPercentFull: boolean;
+  usedTokens: number;
+  windowTokens: number;
+  percentFull: number;
+  observations: UsageObservation[];
+} {
   const context = session.contextManifest;
+  const hasUsedTokens = Number.isFinite(context?.usedTokens) && Number(context?.usedTokens) >= 0;
+  const hasWindowTokens = Number.isFinite(context?.windowTokens) && Number(context?.windowTokens) > 0;
+  const hasContextWindow = hasUsedTokens && hasWindowTokens;
+  const hasPercentFull = Number.isFinite(context?.percentFull)
+    && Number(context?.percentFull) >= 0
+    && Number(context?.percentFull) <= 100;
+  const windowTokens = hasWindowTokens ? Number(context?.windowTokens) : 0;
+  const usedTokens = hasUsedTokens ? Math.min(hasWindowTokens ? windowTokens : Number.POSITIVE_INFINITY, Number(context?.usedTokens)) : 0;
+  const percentFull = hasPercentFull
+    ? Math.max(0, Math.min(100, Number(context?.percentFull)))
+    : hasContextWindow
+      ? Math.round((usedTokens / windowTokens) * 1000) / 10
+      : 0;
+  let remaining = usedTokens;
+  const observedCategories = hasUsedTokens ? (context?.categories ?? []).filter((category) => Number.isFinite(category.estimatedTokens) && category.estimatedTokens > 0) : [];
+  const segments = observedCategories.flatMap((category, index) => {
+    const tokens = Math.min(remaining, category.estimatedTokens);
+    remaining -= tokens;
+    return tokens > 0 ? [{ kind: category.kind, label: category.label, tokens, colorIndex: index }] : [];
+  });
+  if (remaining > 0) segments.push({ kind: observedCategories.length ? "other" : "observed", label: observedCategories.length ? "Other" : "Observed context", tokens: remaining, colorIndex: 7 });
+  const observations = sessionTurns(session).flatMap((turn) => (turn.steps ?? []).filter((step) => step.kind === "usage"))
+    .map((step, index) => ({ index: index + 1, step }));
+  return {
+    segments,
+    unusedTokens: hasContextWindow ? Math.max(0, windowTokens - usedTokens) : 0,
+    hasCategoryBreakdown: observedCategories.length > 0,
+    hasContextWindow,
+    hasUsedTokens,
+    hasPercentFull: hasPercentFull || hasContextWindow,
+    usedTokens,
+    windowTokens,
+    percentFull,
+    observations,
+  };
+}
+
+function ContextUsageBar({ segments, unusedTokens, label }: { segments: ContextSegment[]; unusedTokens: number; label: string }): React.JSX.Element {
+  return <div className="usage-context-bar" role="img" aria-label={label}>
+    {segments.map((segment, index) => <i className={`usage-context-segment category-${segment.colorIndex % 8}`} style={{ flexGrow: segment.tokens } as CSSProperties} title={`${segment.label}: ${formatTokenCount(segment.tokens)} tokens`} key={`${segment.kind}-${segment.label}-${index}`} />)}
+    {unusedTokens > 0 && <i className="usage-context-unused" style={{ flexGrow: unusedTokens } as CSSProperties} title={`Unused: ${formatTokenCount(unusedTokens)} tokens`} />}
+  </div>;
+}
+
+function ContextOccupancyBar({ percentFull, label }: { percentFull: number; label: string }): React.JSX.Element {
+  return <div className="usage-progress-bar usage-occupancy-bar" role="img" aria-label={label}><i style={{ width: `${percentFull}%` }} /></div>;
+}
+
+function UsageContextSummary({ session, onViewReport }: { session: Session; onViewReport(): void }): React.JSX.Element {
+  const usage = session.tokenUsage;
+  const context = usageContextPresentation(session);
+  const total = Number.isFinite(usage?.totalTokens) ? `${formatTokenCount(Number(usage?.totalTokens))} total tokens` : "Token total not reported";
+  return <section className="session-usage-summary" aria-labelledby="session-usage-summary-title">
+    <header className="session-usage-head"><div><h3 id="session-usage-summary-title">Usage and context</h3><span>{usage?.coverage ?? session.contextManifest?.status ?? "unobserved"}</span></div><button className="usage-report-link" type="button" onClick={onViewReport}>View report</button></header>
+    <strong className="usage-summary-total">{total}</strong>
+    <p className="usage-summary-accounting">{formatObservedTokenCount(usage?.inputTokens)} input <span>·</span> {formatObservedTokenCount(usage?.outputTokens)} output</p>
+    {context.hasContextWindow ? <><div className="usage-context-meta"><strong>{context.percentFull}% full</strong><span>{formatTokenCount(context.usedTokens)} / {formatTokenCount(context.windowTokens)}</span></div><ContextUsageBar segments={context.segments} unusedTokens={context.unusedTokens} label={`${context.percentFull}% of the observed context window is full`} />{context.hasCategoryBreakdown ? <ul className="usage-summary-legend">{context.segments.slice(0, 3).map((segment, index) => <li key={`${segment.kind}-${segment.label}-${index}`}><i className={`category-${segment.colorIndex % 8}`} /><span>{segment.label}</span><strong>{formatTokenCount(segment.tokens)}</strong></li>)}{context.segments.length > 3 && <li className="usage-summary-more">+{context.segments.length - 3} more in report</li>}</ul> : <p className="usage-summary-unavailable">Category breakdown unavailable</p>}</> : context.hasPercentFull ? <><div className="usage-context-meta"><strong>{context.percentFull}% full</strong><span>Window size unavailable</span></div><ContextOccupancyBar percentFull={context.percentFull} label={`${context.percentFull}% context occupancy observed; window size unavailable`} /><p className="usage-summary-unavailable">Category breakdown unavailable</p></> : context.hasUsedTokens ? <><div className="usage-context-meta"><strong>Observed prompt</strong><span>{formatTokenCount(context.usedTokens)} tokens</span></div><p className="usage-summary-unavailable">Context window and categories unavailable</p></> : <p className="usage-summary-unavailable">Context-window occupancy not observed</p>}
+  </section>;
+}
+
+function SessionUsageReport({ session }: { session: Session }): React.JSX.Element {
+  const usage = session.tokenUsage;
+  const context = usageContextPresentation(session);
   const runtime = session.runtime;
-  const layers = context?.layers?.map((layer) => `${layer.kind} ×${layer.itemCount}`).join(" · ") || "not observed";
-  const categories = context?.categories?.map((category) => `${category.label} ${formatTokenCount(category.estimatedTokens)}`).join(" · ") || "not observed";
-  const contextWindow = Number.isFinite(context?.windowTokens) && Number.isFinite(context?.usedTokens)
-    ? `${formatTokenCount(Number(context?.usedTokens))} / ${formatTokenCount(Number(context?.windowTokens))} (${context?.percentFull ?? 0}%)`
-    : "not observed";
-  return <details className="session-usage-disclosure"><summary><span>Usage and context</span><em>{usage?.coverage ?? context?.status ?? "unobserved"}</em></summary><dl>
-    <div><dt>Total</dt><dd>{Number.isFinite(usage?.totalTokens) ? formatTokenCount(Number(usage?.totalTokens)) : "not reported"}</dd></div>
-    <div><dt>Input</dt><dd>{formatObservedTokenCount(usage?.inputTokens)}</dd></div>
-    <div><dt>Output</dt><dd>{formatObservedTokenCount(usage?.outputTokens)}</dd></div>
-    <div><dt>Cache read</dt><dd>{formatObservedTokenCount(usage?.cacheReadInputTokens)}</dd></div>
-    <div><dt>Cache write</dt><dd>{formatObservedTokenCount(usage?.cacheCreationInputTokens)}</dd></div>
-    <div><dt>Reasoning</dt><dd>{formatObservedTokenCount(usage?.reasoningOutputTokens)}</dd></div>
-    <div><dt>Context window</dt><dd>{contextWindow}</dd></div>
-    <div><dt>Context layers</dt><dd title={layers}>{layers}</dd></div>
-    <div><dt>Context categories</dt><dd title={categories}>{categories}</dd></div>
-    <div><dt>Compactions</dt><dd>{context ? context.compactionCount ?? 0 : "not observed"}</dd></div>
-    <div><dt>Effort</dt><dd>{runtime?.effort ?? "not observed"}</dd></div>
-    <div><dt>Provider</dt><dd>{runtime?.modelProvider ?? "not observed"}</dd></div>
-    <div><dt>CLI</dt><dd>{runtime?.cliVersion ?? "not observed"}</dd></div>
-    <div><dt>Time basis</dt><dd>{session.timestampBasis ?? "unobserved"}</dd></div>
-    <div><dt>Evidence source</dt><dd title={usage?.source ?? context?.source}>{usage?.source ?? context?.source ?? "not observed"}</dd></div>
-    <div><dt>Raw context</dt><dd>omitted</dd></div>
-  </dl></details>;
+  const accounting = [
+    ["Total", formatObservedTokenCount(usage?.totalTokens)],
+    ["Input", formatObservedTokenCount(usage?.inputTokens)],
+    ["Output", formatObservedTokenCount(usage?.outputTokens)],
+    ["Cache read", formatObservedTokenCount(usage?.cacheReadInputTokens)],
+    ["Cache write", formatObservedTokenCount(usage?.cacheCreationInputTokens)],
+    ["Reasoning", formatObservedTokenCount(usage?.reasoningOutputTokens)],
+  ];
+  return <section className="session-mode-panel usage-report" aria-label="Usage report">
+    <header className="usage-report-lead"><div><span className="usage-report-kicker">Read-only evidence</span><h3>Context Usage Report</h3><p>Observed token accounting and bounded context metadata for this Session.</p></div><div className="usage-report-occupancy">{context.hasContextWindow ? <><strong>{context.percentFull}%</strong><span>Full</span><small>{formatTokenCount(context.usedTokens)} / {formatTokenCount(context.windowTokens)} tokens</small></> : context.hasPercentFull ? <><strong>{context.percentFull}%</strong><span>Full</span><small>Window size not observed</small></> : context.hasUsedTokens ? <><strong>{formatTokenCount(context.usedTokens)}</strong><span>Observed prompt tokens</span><small>Context window not observed</small></> : <><strong>—</strong><span>Occupancy unavailable</span><small>No observed context evidence</small></>}</div><dl className="usage-report-lead-facts"><div><dt>Total usage</dt><dd>{formatObservedTokenCount(usage?.totalTokens)}</dd></div><div><dt>Model responses</dt><dd>{context.observations.length || "not observed"}</dd></div><div><dt>Coverage</dt><dd>{usage?.coverage ?? session.contextManifest?.status ?? "unobserved"}</dd></div></dl></header>
+    <section className="usage-report-section"><header><div><h4>Current context composition</h4><p>Token-weighted categories within the observed used context.</p></div>{context.hasPercentFull && <strong>{context.percentFull}% full</strong>}</header>{context.hasContextWindow ? <><ContextUsageBar segments={context.segments} unusedTokens={context.unusedTokens} label={`${context.percentFull}% of the observed context window is full`} />{context.hasCategoryBreakdown ? <ul className="usage-composition-list">{context.segments.map((segment, index) => <li key={`${segment.kind}-${segment.label}-${index}`}><i className={`category-${segment.colorIndex % 8}`} /><span>{segment.label}</span><strong>{formatTokenCount(segment.tokens)}</strong></li>)}<li className="usage-composition-unused"><i /><span>Unused context window</span><strong>{formatTokenCount(context.unusedTokens)}</strong></li></ul> : <p className="usage-report-unavailable">Category breakdown unavailable; only aggregate used and window totals were retained.</p>}</> : context.hasPercentFull ? <><ContextOccupancyBar percentFull={context.percentFull} label={`${context.percentFull}% context occupancy observed; window size unavailable`} /><p className="usage-report-unavailable">Absolute window and token-weighted categories were not retained.</p></> : context.hasUsedTokens ? <p className="usage-report-unavailable">{formatTokenCount(context.usedTokens)} prompt tokens were observed; the context window and token-weighted categories were not retained.</p> : <p className="usage-report-unavailable">Context-window occupancy and composition were not observed.</p>}</section>
+    <section className="usage-report-section"><header><div><h4>Context progression</h4><p>Observed model-response snapshots, in retained order.</p></div><strong>{context.observations.length} observations</strong></header>{context.observations.length ? <ol className="usage-progress-list">{context.observations.map(({ index, step }) => { const observed = step.contextUsage; const used = Number(observed?.usedTokens); const window = Number(observed?.windowTokens); const observedPercent = Number(observed?.percentFull); const hasUsed = Number.isFinite(used) && used >= 0; const hasWindow = Number.isFinite(window) && window > 0; const hasPercent = Number.isFinite(observedPercent) && observedPercent >= 0 && observedPercent <= 100; const percent = hasPercent ? observedPercent : hasUsed && hasWindow ? Math.max(0, Math.min(100, (used / window) * 100)) : null; return <li key={`${index}-${step.id}`}><div><strong>Model response {index}</strong><span>{step.model ?? step.source ?? "normalized model evidence"}</span></div>{percent !== null ? <><div className="usage-progress-bar" role="img" aria-label={`${Math.round(percent * 10) / 10}% full`}><i style={{ width: `${percent}%` }} /></div><span>{formatContextWindowUsage(observed)}</span></> : <span>{formatContextWindowUsage(observed)}</span>}</li>; })}</ol> : <p className="usage-report-unavailable">Per-response context snapshots were not retained.</p>}</section>
+    <div className="usage-report-columns"><section className="usage-report-section"><header><div><h4>Usage accounting</h4><p>Provider-reported counters; categories may overlap.</p></div></header><dl className="usage-report-facts">{accounting.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section><section className="usage-report-section"><header><div><h4>Context structure</h4><p>Counts only; prompt text remains omitted.</p></div></header><dl className="usage-report-facts">{session.contextManifest?.layers?.length ? session.contextManifest.layers.map((layer) => <div key={layer.kind}><dt>{layer.kind}</dt><dd>×{layer.itemCount}</dd></div>) : <div><dt>Layers</dt><dd>not observed</dd></div>}<div><dt>Compactions</dt><dd>{session.contextManifest ? session.contextManifest.compactionCount ?? 0 : "not observed"}</dd></div></dl></section><section className="usage-report-section"><header><div><h4>Evidence details</h4><p>Runtime and provenance retained with this Session.</p></div></header><dl className="usage-report-facts"><div><dt>Provider</dt><dd>{runtime?.modelProvider ?? "not observed"}</dd></div><div><dt>Effort</dt><dd>{runtime?.effort ?? "not observed"}</dd></div><div><dt>CLI</dt><dd>{runtime?.cliVersion ?? "not observed"}</dd></div><div><dt>Time basis</dt><dd>{session.timestampBasis ?? "unobserved"}</dd></div><div><dt>Context basis</dt><dd>{session.contextManifest?.basis ?? "not observed"}</dd></div><div><dt>Evidence source</dt><dd>{usage?.source ?? session.contextManifest?.source ?? "not observed"}</dd></div><div><dt>Raw context</dt><dd>omitted</dd></div></dl></section></div>
+  </section>;
 }
 
 function Filter({ label, count, checked, subtype = false, onChange }: { label: string; count: number; checked: boolean; subtype?: boolean; onChange(): void }): React.JSX.Element {
@@ -553,11 +633,19 @@ function formatInvocationUsage(usage?: ToolCall["tokenUsage"]): string {
   return parts.join(" · ") || "not observed";
 }
 function formatContextWindowUsage(context?: ToolCall["contextUsage"]): string {
-  if (!context || !Number.isFinite(context.usedTokens) || !Number.isFinite(context.windowTokens)) return "not observed for this response";
-  const percent = Number.isFinite(context.percentFull)
-    ? context.percentFull
-    : Math.min(100, Math.round((context.usedTokens / context.windowTokens) * 1_000) / 10);
-  return `${formatTokenCount(context.usedTokens)} / ${formatTokenCount(context.windowTokens)} · ${percent}% full`;
+  if (!context) return "not observed for this response";
+  const hasUsed = Number.isFinite(context.usedTokens) && Number(context.usedTokens) >= 0;
+  const hasWindow = Number.isFinite(context.windowTokens) && Number(context.windowTokens) > 0;
+  const hasPercent = Number.isFinite(context.percentFull) && Number(context.percentFull) >= 0 && Number(context.percentFull) <= 100;
+  if (hasUsed && hasWindow) {
+    const percent = hasPercent
+      ? Number(context.percentFull)
+      : Math.min(100, Math.round((Number(context.usedTokens) / Number(context.windowTokens)) * 1_000) / 10);
+    return `${formatTokenCount(Number(context.usedTokens))} / ${formatTokenCount(Number(context.windowTokens))} · ${percent}% full`;
+  }
+  if (hasPercent) return `${context.percentFull}% full · window size not observed`;
+  if (hasUsed) return `${formatTokenCount(Number(context.usedTokens))} ${context.basis === "prompt-tokens" ? "observed prompt tokens" : "used tokens"} · context window not observed`;
+  return "not observed for this response";
 }
 function formatTokenUsage(usage?: Session["tokenUsage"]): string {
   if (!usage) return "unavailable";

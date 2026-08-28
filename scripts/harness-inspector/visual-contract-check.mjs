@@ -123,13 +123,11 @@ async function surfacesFor(page) {
     {
       label: "session-usage",
       enter: async () => {
-        const process = page.locator("details.session-process").first();
-        if ((await process.count()) > 0 && !await process.evaluate((element) => element.open)) {
-          await process.locator(":scope > summary").click();
-        }
-        const usage = page.locator(".session-usage-disclosure > summary").first();
+        const usage = page.locator("[data-open-usage-report]").first();
         if ((await usage.count()) === 0) return "skip";
         await usage.click();
+        await page.waitForFunction(() => new URLSearchParams(location.search).get("session-mode") === "usage");
+        await page.locator("[data-session-mode-panel=usage]").waitFor({ state: "visible" });
         await page.waitForTimeout(300);
         return undefined;
       },
@@ -137,6 +135,11 @@ async function surfacesFor(page) {
     {
       label: "session-replay",
       enter: async () => {
+        const back = page.locator(".usage-report-return");
+        if ((await back.count()) > 0 && await back.isVisible()) {
+          await back.click();
+          await page.waitForFunction(() => !new URLSearchParams(location.search).has("session-mode"));
+        }
         const replay = page.locator(".session-mode-tabs button", { hasText: "Replay" }).first();
         if ((await replay.count()) === 0) return "skip";
         await replay.click();

@@ -420,11 +420,19 @@ function projectContextWindowUsage(usage) {
   if (!usage || typeof usage !== "object") return null;
   const usedTokens = Number(usage.usedTokens);
   const windowTokens = Number(usage.windowTokens);
-  if (!Number.isFinite(usedTokens) || usedTokens < 0 || !Number.isFinite(windowTokens) || windowTokens <= 0) return null;
+  const percentFull = Number(usage.percentFull);
+  const hasUsedTokens = Number.isFinite(usedTokens) && usedTokens >= 0;
+  const hasWindowTokens = Number.isFinite(windowTokens) && windowTokens > 0;
+  const hasPercentFull = Number.isFinite(percentFull) && percentFull >= 0 && percentFull <= 100;
+  if (!hasUsedTokens && !hasWindowTokens && !hasPercentFull) return null;
   return {
-    usedTokens: Math.round(usedTokens),
-    windowTokens: Math.round(windowTokens),
-    percentFull: Math.min(100, Math.round((usedTokens / windowTokens) * 1_000) / 10),
+    ...(hasUsedTokens ? { usedTokens: Math.round(usedTokens) } : {}),
+    ...(hasWindowTokens ? { windowTokens: Math.round(windowTokens) } : {}),
+    ...(hasPercentFull ? { percentFull: Math.round(percentFull * 10) / 10 }
+      : hasUsedTokens && hasWindowTokens
+        ? { percentFull: Math.min(100, Math.round((usedTokens / windowTokens) * 1_000) / 10) }
+        : {}),
+    ...(usage.basis ? { basis: safeText(usage.basis, 40) } : {}),
   };
 }
 
@@ -453,9 +461,10 @@ function projectContextManifest(manifest) {
       estimatedTokens: Math.round(nonNegativeNumber(category?.estimatedTokens)),
     })),
   };
-  if (Number.isFinite(Number(manifest.usedTokens))) projected.usedTokens = Math.round(nonNegativeNumber(manifest.usedTokens));
-  if (Number.isFinite(Number(manifest.windowTokens))) projected.windowTokens = Math.round(nonNegativeNumber(manifest.windowTokens));
-  if (Number.isFinite(Number(manifest.percentFull))) projected.percentFull = Math.min(100, Math.round(nonNegativeNumber(manifest.percentFull)));
+  if (manifest.usedTokens !== null && manifest.usedTokens !== undefined && Number.isFinite(Number(manifest.usedTokens))) projected.usedTokens = Math.round(nonNegativeNumber(manifest.usedTokens));
+  if (manifest.windowTokens !== null && manifest.windowTokens !== undefined && Number.isFinite(Number(manifest.windowTokens))) projected.windowTokens = Math.round(nonNegativeNumber(manifest.windowTokens));
+  if (manifest.percentFull !== null && manifest.percentFull !== undefined && Number.isFinite(Number(manifest.percentFull))) projected.percentFull = Math.min(100, Math.round(nonNegativeNumber(manifest.percentFull) * 10) / 10);
+  if (manifest.basis) projected.basis = safeText(manifest.basis, 40);
   return projected;
 }
 

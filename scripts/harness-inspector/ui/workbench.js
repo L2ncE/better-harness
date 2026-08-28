@@ -36,7 +36,7 @@
     sessionOpen:false,
     sessionPushed:false,
     syncingHistory:false,
-    sessionMode:initialParams.get('session-mode') === 'replay' ? 'replay' : 'trace',
+    sessionMode:['replay','usage'].includes(initialParams.get('session-mode')) ? initialParams.get('session-mode') : 'trace',
     replayEventId:initialParams.get('replay-event'),
     replayIndexTab:'events',
     replayPlaying:false,
@@ -156,11 +156,17 @@
     return parts.join(' · ') || 'not observed';
   };
   const formatContextWindowUsage = context => {
-    if (!context || !Number.isFinite(context.usedTokens) || !Number.isFinite(context.windowTokens)) return 'not observed for this response';
-    const percent = Number.isFinite(context.percentFull)
-      ? context.percentFull
-      : Math.min(100,Math.round((context.usedTokens / context.windowTokens) * 1000) / 10);
-    return formatTokenCount(context.usedTokens) + ' / ' + formatTokenCount(context.windowTokens) + ' · ' + percent + '% full';
+    if (!context) return 'not observed for this response';
+    const hasUsed = Number.isFinite(context.usedTokens) && context.usedTokens >= 0;
+    const hasWindow = Number.isFinite(context.windowTokens) && context.windowTokens > 0;
+    const hasPercent = Number.isFinite(context.percentFull) && context.percentFull >= 0 && context.percentFull <= 100;
+    if (hasUsed && hasWindow) {
+      const percent = hasPercent ? context.percentFull : Math.min(100,Math.round((context.usedTokens / context.windowTokens) * 1000) / 10);
+      return formatTokenCount(context.usedTokens) + ' / ' + formatTokenCount(context.windowTokens) + ' · ' + percent + '% full';
+    }
+    if (hasPercent) return context.percentFull + '% full · window size not observed';
+    if (hasUsed) return formatTokenCount(context.usedTokens) + (context.basis === 'prompt-tokens' ? ' observed prompt tokens' : ' used tokens') + ' · context window not observed';
+    return 'not observed for this response';
   };
   const usageStepMarkup = (step,index) => {
     const source = step.source ?? 'normalized model evidence';
@@ -169,35 +175,102 @@
       + '<div><dt>Context</dt><dd>' + escape(formatContextWindowUsage(step.contextUsage)) + '</dd></div>'
       + '</dl></article>';
   };
+  const usageContextPresentation = session => {
+    const context = session.contextManifest;
+    const hasUsedTokens = Number.isFinite(context?.usedTokens) && context.usedTokens >= 0;
+    const hasWindowTokens = Number.isFinite(context?.windowTokens) && context.windowTokens > 0;
+    const hasContextWindow = hasUsedTokens && hasWindowTokens;
+    const hasObservedPercent = Number.isFinite(context?.percentFull) && context.percentFull >= 0 && context.percentFull <= 100;
+    const windowTokens = hasWindowTokens ? context.windowTokens : 0;
+    const usedTokens = hasUsedTokens ? Math.min(hasWindowTokens ? windowTokens : Number.POSITIVE_INFINITY,context.usedTokens) : 0;
+    const percentFull = hasObservedPercent
+      ? Math.max(0,Math.min(100,context.percentFull))
+      : hasContextWindow ? Math.round((usedTokens / windowTokens) * 1000) / 10 : 0;
+    let remaining = usedTokens;
+    const categories = hasUsedTokens ? (context?.categories ?? []).filter(category => Number.isFinite(category.estimatedTokens) && category.estimatedTokens > 0) : [];
+    const segments = categories.flatMap((category,index) => {
+      const tokens = Math.min(remaining,category.estimatedTokens);
+      remaining -= tokens;
+      return tokens > 0 ? [{ kind:category.kind,label:category.label,tokens,colorIndex:index }] : [];
+    });
+    if (remaining > 0) segments.push({ kind:categories.length ? 'other' : 'observed',label:categories.length ? 'Other' : 'Observed context',tokens:remaining,colorIndex:7 });
+    const turns = session.dialogue?.turns?.length ? session.dialogue.turns : [];
+    const observations = turns.flatMap(turn => turn.steps?.filter(step => step.kind === 'usage') ?? []).map((step,index) => ({ index:index + 1,step }));
+    return { segments,unusedTokens:hasContextWindow ? Math.max(0,windowTokens - usedTokens) : 0,hasCategoryBreakdown:categories.length > 0,hasContextWindow,hasUsedTokens,hasPercentFull:hasObservedPercent || hasContextWindow,usedTokens,windowTokens,percentFull,observations };
+  };
+  const contextBarMarkup = (context,label) => '<div class="usage-context-bar" role="img" aria-label="' + escape(label) + '">'
+    + context.segments.map(segment => '<i class="usage-context-segment category-' + (segment.colorIndex % 8) + '" style="flex-grow:' + segment.tokens + '" title="' + escape(segment.label + ': ' + formatTokenCount(segment.tokens) + ' tokens') + '"></i>').join('')
+    + (context.unusedTokens > 0 ? '<i class="usage-context-unused" style="flex-grow:' + context.unusedTokens + '" title="Unused: ' + escape(formatTokenCount(context.unusedTokens)) + ' tokens"></i>' : '')
+    + '</div>';
+  const occupancyBarMarkup = (percent,label) => '<div class="usage-progress-bar usage-occupancy-bar" role="img" aria-label="' + escape(label) + '"><i style="width:' + percent + '%"></i></div>';
   const usageContextMarkup = session => {
     const usage = session.tokenUsage;
-    const context = session.contextManifest;
+    const context = usageContextPresentation(session);
+    const total = Number.isFinite(usage?.totalTokens) ? formatTokenCount(usage.totalTokens) + ' total tokens' : 'Token total not reported';
+    const contextMarkup = context.hasContextWindow
+      ? '<div class="usage-context-meta"><strong>' + context.percentFull + '% full</strong><span>' + formatTokenCount(context.usedTokens) + ' / ' + formatTokenCount(context.windowTokens) + '</span></div>'
+        + contextBarMarkup(context,context.percentFull + '% of the observed context window is full')
+        + (context.hasCategoryBreakdown
+          ? '<ul class="usage-summary-legend">' + context.segments.slice(0,3).map(segment => '<li><i class="category-' + (segment.colorIndex % 8) + '"></i><span>' + escape(segment.label) + '</span><strong>' + formatTokenCount(segment.tokens) + '</strong></li>').join('') + (context.segments.length > 3 ? '<li class="usage-summary-more">+' + (context.segments.length - 3) + ' more in report</li>' : '') + '</ul>'
+          : '<p class="usage-summary-unavailable">Category breakdown unavailable</p>')
+      : context.hasPercentFull
+        ? '<div class="usage-context-meta"><strong>' + context.percentFull + '% full</strong><span>Window size unavailable</span></div>'
+          + occupancyBarMarkup(context.percentFull,context.percentFull + '% context occupancy observed; window size unavailable')
+          + '<p class="usage-summary-unavailable">Category breakdown unavailable</p>'
+        : context.hasUsedTokens
+          ? '<div class="usage-context-meta"><strong>Observed prompt</strong><span>' + formatTokenCount(context.usedTokens) + ' tokens</span></div><p class="usage-summary-unavailable">Context window and categories unavailable</p>'
+          : '<p class="usage-summary-unavailable">Context-window occupancy not observed</p>';
+    return '<section class="session-usage-summary" aria-labelledby="session-usage-summary-title"><header class="session-usage-head"><div><h3 id="session-usage-summary-title">Usage and context</h3><span>'
+      + escape(usage?.coverage ?? session.contextManifest?.status ?? 'unobserved') + '</span></div><button class="usage-report-link" type="button" data-open-usage-report>View report</button></header>'
+      + '<strong class="usage-summary-total">' + escape(total) + '</strong><p class="usage-summary-accounting">' + escape(formatObservedTokenCount(usage?.inputTokens)) + ' input <span>·</span> ' + escape(formatObservedTokenCount(usage?.outputTokens)) + ' output</p>'
+      + contextMarkup + '</section>';
+  };
+  const usageReportMarkup = session => {
+    const usage = session.tokenUsage;
+    const context = usageContextPresentation(session);
     const runtime = session.runtime;
-    const layers = context?.layers?.map(layer => layer.kind + ' ×' + layer.itemCount).join(' · ') || 'not observed';
-    const categories = context?.categories?.map(category => category.label + ' ' + formatTokenCount(category.estimatedTokens)).join(' · ') || 'not observed';
-    const contextWindow = Number.isFinite(context?.windowTokens) && Number.isFinite(context?.usedTokens)
-      ? formatTokenCount(context.usedTokens) + ' / ' + formatTokenCount(context.windowTokens) + ' (' + (context.percentFull ?? 0) + '%)'
-      : 'not observed';
-    const row = (label,value,title = value) => '<div><dt>' + escape(label) + '</dt><dd title="' + escape(title) + '">' + escape(value) + '</dd></div>';
-    return '<details class="session-usage-disclosure"><summary><span>Usage and context</span><em>'
-      + escape(usage?.coverage ?? context?.status ?? 'unobserved') + '</em></summary><dl>'
-      + row('Total',Number.isFinite(usage?.totalTokens) ? formatTokenCount(usage.totalTokens) : 'not reported')
-      + row('Input',formatObservedTokenCount(usage?.inputTokens))
-      + row('Output',formatObservedTokenCount(usage?.outputTokens))
-      + row('Cache read',formatObservedTokenCount(usage?.cacheReadInputTokens))
-      + row('Cache write',formatObservedTokenCount(usage?.cacheCreationInputTokens))
-      + row('Reasoning',formatObservedTokenCount(usage?.reasoningOutputTokens))
-      + row('Context window',contextWindow)
-      + row('Context layers',layers)
-      + row('Context categories',categories)
-      + row('Compactions',context ? String(context.compactionCount ?? 0) : 'not observed')
-      + row('Effort',runtime?.effort ?? 'not observed')
-      + row('Provider',runtime?.modelProvider ?? 'not observed')
-      + row('CLI',runtime?.cliVersion ?? 'not observed')
-      + row('Time basis',session.timestampBasis ?? 'unobserved')
-      + row('Evidence source',usage?.source ?? context?.source ?? 'not observed')
-      + row('Raw context','omitted')
-      + '</dl></details>';
+    const fact = (label,value) => '<div><dt>' + escape(label) + '</dt><dd>' + escape(value) + '</dd></div>';
+    const accounting = [['Total',usage?.totalTokens],['Input',usage?.inputTokens],['Output',usage?.outputTokens],['Cache read',usage?.cacheReadInputTokens],['Cache write',usage?.cacheCreationInputTokens],['Reasoning',usage?.reasoningOutputTokens]]
+      .map(([label,value]) => fact(label,formatObservedTokenCount(value))).join('');
+    const occupancy = context.hasContextWindow
+      ? '<strong>' + context.percentFull + '%</strong><span>Full</span><small>' + formatTokenCount(context.usedTokens) + ' / ' + formatTokenCount(context.windowTokens) + ' tokens</small>'
+      : context.hasPercentFull
+        ? '<strong>' + context.percentFull + '%</strong><span>Full</span><small>Window size not observed</small>'
+        : context.hasUsedTokens
+          ? '<strong>' + formatTokenCount(context.usedTokens) + '</strong><span>Observed prompt tokens</span><small>Context window not observed</small>'
+          : '<strong>—</strong><span>Occupancy unavailable</span><small>No observed context evidence</small>';
+    const composition = context.hasContextWindow
+      ? contextBarMarkup(context,context.percentFull + '% of the observed context window is full')
+        + (context.hasCategoryBreakdown
+          ? '<ul class="usage-composition-list">' + context.segments.map(segment => '<li><i class="category-' + (segment.colorIndex % 8) + '"></i><span>' + escape(segment.label) + '</span><strong>' + formatTokenCount(segment.tokens) + '</strong></li>').join('') + '<li class="usage-composition-unused"><i></i><span>Unused context window</span><strong>' + formatTokenCount(context.unusedTokens) + '</strong></li></ul>'
+          : '<p class="usage-report-unavailable">Category breakdown unavailable; only aggregate used and window totals were retained.</p>')
+      : context.hasPercentFull
+        ? occupancyBarMarkup(context.percentFull,context.percentFull + '% context occupancy observed; window size unavailable') + '<p class="usage-report-unavailable">Absolute window and token-weighted categories were not retained.</p>'
+        : context.hasUsedTokens
+          ? '<p class="usage-report-unavailable">' + formatTokenCount(context.usedTokens) + ' prompt tokens were observed; the context window and token-weighted categories were not retained.</p>'
+          : '<p class="usage-report-unavailable">Context-window occupancy and composition were not observed.</p>';
+    const progression = context.observations.length
+      ? '<ol class="usage-progress-list">' + context.observations.map(({ index,step }) => {
+        const observed = step.contextUsage;
+        const hasUsed = Number.isFinite(observed?.usedTokens) && observed.usedTokens >= 0;
+        const hasWindow = Number.isFinite(observed?.windowTokens) && observed.windowTokens > 0;
+        const hasPercent = Number.isFinite(observed?.percentFull) && observed.percentFull >= 0 && observed.percentFull <= 100;
+        const percent = hasPercent ? observed.percentFull : hasUsed && hasWindow ? Math.max(0,Math.min(100,(observed.usedTokens / observed.windowTokens) * 100)) : null;
+        return '<li><div><strong>Model response ' + index + '</strong><span>' + escape(step.model ?? step.source ?? 'normalized model evidence') + '</span></div>'
+          + (percent !== null ? '<div class="usage-progress-bar" role="img" aria-label="' + (Math.round(percent * 10) / 10) + '% full"><i style="width:' + percent + '%"></i></div>' : '')
+          + '<span>' + escape(formatContextWindowUsage(observed)) + '</span></li>';
+      }).join('') + '</ol>'
+      : '<p class="usage-report-unavailable">Per-response context snapshots were not retained.</p>';
+    const layers = session.contextManifest?.layers?.length
+      ? session.contextManifest.layers.map(layer => fact(layer.kind,'×' + layer.itemCount)).join('')
+      : fact('Layers','not observed');
+    return '<section class="session-mode-panel usage-report" aria-label="Usage report" data-session-mode-panel="usage" hidden>'
+      + '<header class="usage-report-lead"><div><span class="usage-report-kicker">Read-only evidence</span><h3>Context Usage Report</h3><p>Observed token accounting and bounded context metadata for this Session.</p></div><div class="usage-report-occupancy">' + occupancy + '</div><dl class="usage-report-lead-facts">' + fact('Total usage',formatObservedTokenCount(usage?.totalTokens)) + fact('Model responses',context.observations.length ? String(context.observations.length) : 'not observed') + fact('Coverage',usage?.coverage ?? session.contextManifest?.status ?? 'unobserved') + '</dl></header>'
+      + '<section class="usage-report-section"><header><div><h4>Current context composition</h4><p>Token-weighted categories within the observed used context.</p></div>' + (context.hasPercentFull ? '<strong>' + context.percentFull + '% full</strong>' : '') + '</header>' + composition + '</section>'
+      + '<section class="usage-report-section"><header><div><h4>Context progression</h4><p>Observed model-response snapshots, in retained order.</p></div><strong>' + context.observations.length + ' observations</strong></header>' + progression + '</section>'
+      + '<div class="usage-report-columns"><section class="usage-report-section"><header><div><h4>Usage accounting</h4><p>Provider-reported counters; categories may overlap.</p></div></header><dl class="usage-report-facts">' + accounting + '</dl></section>'
+      + '<section class="usage-report-section"><header><div><h4>Context structure</h4><p>Counts only; prompt text remains omitted.</p></div></header><dl class="usage-report-facts">' + layers + fact('Compactions',session.contextManifest ? String(session.contextManifest.compactionCount ?? 0) : 'not observed') + '</dl></section>'
+      + '<section class="usage-report-section"><header><div><h4>Evidence details</h4><p>Runtime and provenance retained with this Session.</p></div></header><dl class="usage-report-facts">' + fact('Provider',runtime?.modelProvider ?? 'not observed') + fact('Effort',runtime?.effort ?? 'not observed') + fact('CLI',runtime?.cliVersion ?? 'not observed') + fact('Time basis',session.timestampBasis ?? 'unobserved') + fact('Context basis',session.contextManifest?.basis ?? 'not observed') + fact('Evidence source',usage?.source ?? session.contextManifest?.source ?? 'not observed') + fact('Raw context','omitted') + '</dl></section></div></section>';
   };
   const evidence = (kind, label = kind) => '<span class="evidence ' + escape(kind) + '">' + escape(label) + '</span>';
   const isDirectCommitLink = link => link?.evidenceKind === 'explicit' || link?.evidenceKind === 'observed-commit';
@@ -982,7 +1055,6 @@
       + '<div><dt>Turns</dt><dd title="' + escape(coverageTitle(session)) + '">' + coverage.turnCount + '</dd></div>'
       + '<div><dt>Tool calls</dt><dd>' + session.toolActivity.totalCalls + '</dd></div>'
       + '<div><dt>File edits</dt><dd>' + session.fileEditCount + '</dd></div>'
-      + '<div><dt>Token usage</dt><dd>' + escape(formatTokens(session.tokenUsage)) + '</dd></div>'
       + projectionFact;
     const sessionOutline = '<aside class="session-sidebar" aria-label="Session outline"><header><div><strong>Session outline</strong><span>Read-only</span></div></header><section><h3>Cells</h3><select class="jump-select" data-session-jump>' + jumpOptions + '</select><div class="session-bulk"><button type="button" data-expand-tools="open">Expand process</button><button type="button" data-expand-tools="close">Collapse process</button></div></section><details class="session-filter-disclosure"><summary><span>Evidence filters</span><em>' + session.toolActivity.totalCalls + ' calls</em></summary><div class="session-filter-list"><label class="session-filter"><input type="checkbox" checked data-session-kind-filter="prompts"><span>Prompts</span><em>' + turns.length + '</em></label><label class="session-filter"><input type="checkbox" checked data-session-kind-filter="responses"><span>Results</span><em>' + responseCount + '</em></label><label class="session-filter"><input type="checkbox" checked data-session-kind-filter="intermediate"><span>Intermediate</span><em>' + noteCount + '</em></label><label class="session-filter"><input type="checkbox" checked data-session-kind-filter="usage"><span>Model usage</span><em>' + usageCount + '</em></label><label class="session-filter"><input type="checkbox" checked data-session-kind-filter="commits"><span>Commits</span><em>' + commits.length + '</em></label><label class="session-filter"><input type="checkbox" checked data-session-kind-filter="tools"><span>Tool calls</span><em>' + session.toolActivity.totalCalls + '</em></label>' + filters + '<label class="session-filter subtype"><input type="checkbox" checked data-session-file-filter><span>File paths</span><em>' + session.toolActivity.files.length + '</em></label></div></details><section class="session-outline-facts"><h3>Session</h3><dl>' + sessionFacts + '</dl></section>' + usageContextMarkup(session) + '</aside>';
     const overallActivity = session.toolActivity.totalCalls ? '<section class="session-overall-activity"><details class="session-axis-panel" data-session-axis><summary><span>Overall session activity <em>' + session.toolActivity.totalCalls + ' calls</em></span><small>All retained Turns and unplaced calls</small></summary><div class="session-axis" data-activity-chart="' + escape(session.sessionId) + '"></div></details></section>' : '';
@@ -993,7 +1065,8 @@
       + '<div class="replay-layout"><main class="replay-stage" tabindex="0" aria-label="Current replay event; J and L move between events, Space toggles playback" data-replay-stage aria-live="polite"></main><aside class="replay-index"><div class="replay-index-tabs" role="tablist" aria-label="Replay index"><button type="button" id="replay-index-tab-events" role="tab" aria-controls="replay-index-body" aria-selected="true" tabindex="0" data-replay-index-tab="events">Events <span>' + session.replay.eventCount + '</span></button><button type="button" id="replay-index-tab-files" role="tab" aria-controls="replay-index-body" aria-selected="false" tabindex="-1" data-replay-index-tab="files">Files <span>' + session.replay.files.length + '</span></button></div><div class="replay-index-body" id="replay-index-body" role="tabpanel" aria-labelledby="replay-index-tab-events" data-replay-index-body></div></aside></div>'
       + '<section class="replay-transport" aria-label="Replay controls"><div class="replay-rail-head"><strong>Session timeline</strong><span data-replay-range></span></div><div class="replay-rail" data-replay-rail></div><div class="replay-rail-legend">' + replayLegendMarkup(session.replay) + '</div><div class="replay-controls"><button type="button" data-replay-step="-1">Previous event <kbd>J</kbd></button><button type="button" class="replay-play" data-replay-play>Play <kbd>Space</kbd></button><button type="button" data-replay-step="1">Next event <kbd>L</kbd></button><span class="replay-position" data-replay-position></span><div class="replay-speeds" aria-label="Replay speed">' + [1,2,4,8].map(speed => '<button type="button" data-replay-speed="' + speed + '" aria-pressed="' + String(speed === state.replaySpeed) + '">' + speed + 'x</button>').join('') + '</div></div></section></section>';
     const modeTabs = '<div class="session-mode-tabs" role="tablist" aria-label="Session view mode"><button type="button" id="session-tab-trace" role="tab" aria-controls="session-panel-trace" aria-selected="true" tabindex="0" data-session-mode="trace">Trace</button><button type="button" id="session-tab-replay" role="tab" aria-controls="session-panel-replay" aria-selected="false" tabindex="-1" data-session-mode="replay">Replay</button></div>';
-    return { title, html:'<div class="session-shell"><header class="session-titlebar"><div class="session-notebook-brand"><strong>Harness Inspector</strong></div><div class="session-title-copy"><h2>' + escape(title) + '</h2></div><div class="session-title-actions">' + modeTabs + '</div></header>' + tracePanel + replayPanel + '</div>' };
+    const usageReturn = '<button class="usage-report-return" type="button" data-session-mode="trace" hidden>Back to Trace</button>';
+    return { title, html:'<div class="session-shell"><header class="session-titlebar"><div class="session-notebook-brand"><strong>Harness Inspector</strong></div><div class="session-title-copy"><h2>' + escape(title) + '</h2></div><div class="session-title-actions">' + modeTabs + usageReturn + '</div></header>' + tracePanel + replayPanel + usageReportMarkup(session) + '</div>' };
   }
 
   function replayModel() {
@@ -1202,14 +1275,18 @@
   }
 
   function setSessionMode(mode,{ updateHistory = true } = {}) {
-    const next = mode === 'replay' ? 'replay' : 'trace';
+    const next = mode === 'replay' || mode === 'usage' ? mode : 'trace';
     state.sessionMode = next;
     if (next !== 'replay') stopReplay();
-    document.querySelectorAll('[data-session-mode]').forEach(tab => {
+    document.querySelectorAll('.session-mode-tabs [data-session-mode]').forEach(tab => {
       const selected = tab.dataset.sessionMode === next;
       tab.setAttribute('aria-selected',String(selected));
       tab.tabIndex = selected ? 0 : -1;
     });
+    const modeTabs = document.querySelector('.session-mode-tabs');
+    const usageReturn = document.querySelector('.usage-report-return');
+    if (modeTabs) modeTabs.hidden = next === 'usage';
+    if (usageReturn) usageReturn.hidden = next !== 'usage';
     document.querySelectorAll('[data-session-mode-panel]').forEach(panel => { panel.hidden = panel.dataset.sessionModePanel !== next; });
     if (next === 'replay') renderReplay();
     if (updateHistory) updateUrl();
@@ -1291,7 +1368,8 @@
     const changingSession = state.sessionItem?.session?.sessionId !== item.session.sessionId;
     if (changingSession) {
       state.replayEventId = restoringThisSession ? params.get('replay-event') : null;
-      state.sessionMode = restoringThisSession && params.get('session-mode') === 'replay' ? 'replay' : 'trace';
+      const restoredMode = params.get('session-mode');
+      state.sessionMode = restoringThisSession && (restoredMode === 'replay' || restoredMode === 'usage') ? restoredMode : 'trace';
       state.replayIndexTab = 'events';
     }
     state.sessionItem = item;
@@ -1363,8 +1441,10 @@
       url.searchParams.set('view','session');
       const sessionId = state.sessionItem?.session?.sessionId;
       if (sessionId) url.searchParams.set('session',sessionId);
+      if (state.sessionMode === 'replay' || state.sessionMode === 'usage') {
+        url.searchParams.set('session-mode',state.sessionMode);
+      }
       if (state.sessionMode === 'replay') {
-        url.searchParams.set('session-mode','replay');
         if (state.replayEventId) url.searchParams.set('replay-event',state.replayEventId);
       }
     }
@@ -1608,6 +1688,8 @@
       if (!open) document.querySelectorAll('#session-view details.session-tool-run').forEach(details => { details.open = false; });
       return;
     }
+    const openUsageReport = event.target.closest('[data-open-usage-report]');
+    if (openUsageReport) { setSessionMode('usage'); return; }
     const sessionMode = event.target.closest('[data-session-mode]');
     if (sessionMode) { setSessionMode(sessionMode.dataset.sessionMode); return; }
     const replayIndexTab = event.target.closest('[data-replay-index-tab]');
@@ -1770,7 +1852,7 @@
   });
 
   document.addEventListener('keydown', event => {
-    const sessionModeTab = event.target.closest?.('[data-session-mode]');
+    const sessionModeTab = event.target.closest?.('.session-mode-tabs [data-session-mode]');
     if (sessionModeTab && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
       const nextMode = sessionModeTab.dataset.sessionMode === 'trace' ? 'replay' : 'trace';
       setSessionMode(nextMode);
@@ -1850,7 +1932,8 @@
     setMode(mode,{ updateHistory:false });
     const session = bySession.get(params.get('session'));
     if (params.get('view') === 'session' && session) {
-      state.sessionMode = params.get('session-mode') === 'replay' ? 'replay' : 'trace';
+      const restoredMode = params.get('session-mode');
+      state.sessionMode = restoredMode === 'replay' || restoredMode === 'usage' ? restoredMode : 'trace';
       state.replayEventId = params.get('replay-event');
       const item = itemForSession(session);
       if (item) openSessionView(item,state.sessionTrigger,{ updateHistory:false });

@@ -114,17 +114,24 @@ function summarizeUsageStep(step) {
   }));
   const usedTokens = Number(step?.contextUsage?.usedTokens);
   const windowTokens = Number(step?.contextUsage?.windowTokens);
-  const hasContext = Number.isFinite(usedTokens) && usedTokens >= 0
-    && Number.isFinite(windowTokens) && windowTokens > 0;
+  const percentFull = Number(step?.contextUsage?.percentFull);
+  const hasUsedTokens = Number.isFinite(usedTokens) && usedTokens >= 0;
+  const hasWindowTokens = Number.isFinite(windowTokens) && windowTokens > 0;
+  const hasPercentFull = Number.isFinite(percentFull) && percentFull >= 0 && percentFull <= 100;
+  const hasContext = hasUsedTokens || hasWindowTokens || hasPercentFull;
   if (Object.keys(tokenUsage).length === 0 && !hasContext) return null;
   return {
     kind: "usage",
     ...(Object.keys(tokenUsage).length > 0 ? { tokenUsage } : {}),
     ...(hasContext ? {
       contextUsage: {
-        usedTokens: Math.round(usedTokens),
-        windowTokens: Math.round(windowTokens),
-        percentFull: Math.min(100, Math.round((usedTokens / windowTokens) * 1_000) / 10),
+        ...(hasUsedTokens ? { usedTokens: Math.round(usedTokens) } : {}),
+        ...(hasWindowTokens ? { windowTokens: Math.round(windowTokens) } : {}),
+        ...(hasPercentFull ? { percentFull: Math.round(percentFull * 10) / 10 }
+          : hasUsedTokens && hasWindowTokens
+            ? { percentFull: Math.min(100, Math.round((usedTokens / windowTokens) * 1_000) / 10) }
+            : {}),
+        ...(step?.contextUsage?.basis ? { basis: String(step.contextUsage.basis).slice(0, 40) } : {}),
       },
     } : {}),
     ...(step?.basis ? { basis: String(step.basis).slice(0, 40) } : {}),
@@ -315,7 +322,7 @@ export function summarizeSessionEvents(session, events = [], {
       });
     }
     if (event?.currentContextUsage && typeof event.currentContextUsage === "object") {
-      currentContextUsage = event.currentContextUsage;
+      currentContextUsage = { ...(currentContextUsage ?? {}), ...event.currentContextUsage };
     }
     if (event?.compactionBoundary === true) compactionCount += 1;
   }
@@ -340,9 +347,14 @@ export function summarizeSessionEvents(session, events = [], {
 
   const contextWindowTokens = Number(currentContextUsage?.windowTokens);
   const contextUsedTokens = Number(currentContextUsage?.usedTokens);
+  const contextPercentFull = Number(currentContextUsage?.percentFull);
+  const hasContextUsedTokens = Number.isFinite(contextUsedTokens) && contextUsedTokens >= 0;
+  const hasContextWindowTokens = Number.isFinite(contextWindowTokens) && contextWindowTokens > 0;
+  const hasContextPercentFull = Number.isFinite(contextPercentFull) && contextPercentFull >= 0 && contextPercentFull <= 100;
   const hasContextWindow = Number.isFinite(contextWindowTokens) && contextWindowTokens > 0
     && Number.isFinite(contextUsedTokens) && contextUsedTokens >= 0;
-  const contextManifestObserved = contextLayers.size > 0 || contextCategories.size > 0 || hasContextWindow || compactionCount > 0;
+  const contextManifestObserved = contextLayers.size > 0 || contextCategories.size > 0
+    || hasContextUsedTokens || hasContextWindowTokens || hasContextPercentFull || compactionCount > 0;
   const tokenUsage = usageObserved ? {
     ...Object.fromEntries(TOKEN_USAGE_FIELDS
       .filter((field) => observedTokenFields.has(field))
@@ -352,14 +364,16 @@ export function summarizeSessionEvents(session, events = [], {
     coverage: "observed",
   } : null;
   const contextManifest = contextManifestObserved ? {
-    status: "observed",
+    status: hasContextWindow || contextCategories.size > 0 ? "observed" : "partial",
     source: currentContextUsage?.source ?? "normalized-context-events",
     rawTextOmitted: true,
-    ...(hasContextWindow ? {
-      usedTokens: Math.round(contextUsedTokens),
-      windowTokens: Math.round(contextWindowTokens),
-      percentFull: Math.min(100, Math.round((contextUsedTokens / contextWindowTokens) * 100)),
-    } : {}),
+    ...(hasContextUsedTokens ? { usedTokens: Math.round(contextUsedTokens) } : {}),
+    ...(hasContextWindowTokens ? { windowTokens: Math.round(contextWindowTokens) } : {}),
+    ...(hasContextPercentFull ? { percentFull: Math.round(contextPercentFull * 10) / 10 }
+      : hasContextWindow
+        ? { percentFull: Math.min(100, Math.round((contextUsedTokens / contextWindowTokens) * 1_000) / 10) }
+        : {}),
+    ...(currentContextUsage?.basis ? { basis: String(currentContextUsage.basis).slice(0, 40) } : {}),
     compactionCount,
     layers: [...contextLayers.entries()]
       .map(([kind, itemCount]) => ({ kind, itemCount: Math.round(itemCount) }))

@@ -960,21 +960,31 @@ test("opens a project workspace and compares Inspector-discovered Sessions", asy
   await expect(inspector.locator(".session-event.usage").first()).toContainText("25 / 100 · 25% full");
   await inspector.locator("details.session-filter-disclosure > summary").click();
   await expect(inspector.getByRole("checkbox", { name: /Tool calls/u })).toBeChecked();
-  await inspector.locator("details.session-usage-disclosure > summary").click();
-  await expect(inspector.locator("details.session-usage-disclosure")).toContainText("198");
-  await expect(inspector.locator("details.session-usage-disclosure")).toContainText("25 / 100 (25%)");
-  await expect(inspector.locator("details.session-usage-disclosure")).toContainText(/Raw context\s*omitted/u);
+  const usageSummary = inspector.locator(".session-usage-summary");
+  await expect(usageSummary).toContainText("198 total tokens");
+  await expect(usageSummary).toContainText("25 / 100");
+  await usageSummary.getByRole("button", { name: "View report" }).click();
+  await expect(page).toHaveURL(/inspector-view=usage/u);
+  const usageReport = inspector.getByRole("region", { name: "Usage report" });
+  await expect(usageReport).toContainText("Context Usage Report");
+  await expect(usageReport).toContainText(/Rules\s*10/u);
+  await expect(usageReport).toContainText(/Other\s*15/u);
+  await expect(usageReport).toContainText(/Raw context\s*omitted/u);
   for (const layout of [
     { name: "wide", width: 1440, height: 900 },
     { name: "compact", width: 1024, height: 768 },
     { name: "narrow", width: 390, height: 844 },
   ]) {
     await page.setViewportSize({ width: layout.width, height: layout.height });
+    if (layout.width <= 1080) await expect(page.locator(".studio-primary-nav")).not.toBeInViewport();
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
     expect(overflow, `${layout.name} usage and context detail overflows horizontally`).toBe(false);
     await page.screenshot({ path: `test-results/session-detail-usage-${layout.name}.png`, fullPage: true });
   }
   await page.setViewportSize({ width: 1440, height: 900 });
+  await inspector.getByRole("button", { name: "Back to Trace" }).click();
+  await expect(page).not.toHaveURL(/inspector-view=/u);
+  await expect(inspector.locator(".session-layout")).toBeVisible();
   await inspector.getByRole("tab", { name: "Replay" }).click();
   await expect(inspector.getByRole("tab", { name: /Events/u })).toHaveAttribute("aria-selected", "true");
   await expect(inspector.getByRole("tab", { name: /Files/u })).toBeVisible();

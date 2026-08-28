@@ -924,6 +924,7 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
         event.currentContextUsage = {
           usedTokens: Number(lastModelUsage.inputTokens) || 0,
           windowTokens: Math.round(contextWindowTokens),
+          basis: "prompt-tokens",
           source: "codex-rollout-token-count",
           rawTextOmitted: true,
         };

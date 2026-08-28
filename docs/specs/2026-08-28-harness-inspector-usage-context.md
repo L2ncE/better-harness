@@ -4,6 +4,7 @@
 
 - Spec ID: harness-inspector-usage-context
 - Status: Implemented
+- Refs: https://github.com/QoderAI/better-harness/pull/122
 
 ## Intent
 
@@ -11,7 +12,7 @@ Make Harness Inspector report the token and context evidence that supported
 coding-agent sessions without confusing provider-specific accounting or
 embedding sensitive system/developer instructions in its portable HTML. The
 Inspector should expose what was actually observed, where it came from, and
-which fields remain unavailable for Codex, Claude, and Cursor.
+which fields remain unavailable for Cursor, Codex, Qoder, and Claude Code.
 
 This change also closes two correctness gaps found during the evidence audit:
 Codex developer messages must not be projected as assistant dialogue, and
@@ -42,10 +43,10 @@ from the default Inspector window.
 - AC-5: A Cursor transcript without native timestamps remains discoverable. Its
   file modification time may supply a low-authority source timestamp only when
   labelled `source-file-mtime`; it must not be presented as a native event time.
-- AC-6: Standalone Inspector and native Studio Session Detail expose one docked,
-  progressively disclosed `Usage and context` facts section. It shows token
-  breakdown, context-window occupancy, provenance/coverage, runtime metadata,
-  and unavailability honestly at wide, compact, and narrow widths.
+- AC-6: Standalone Inspector and native Studio Session Detail expose one docked
+  `Usage and context` entry. It progressively discloses token breakdown,
+  context-window occupancy, provenance/coverage, runtime metadata, and honest
+  unavailable states at wide, compact, and narrow widths.
 - AC-7: The self-contained report contains no raw base instructions,
   developer/system message content, context item text, absolute home paths,
   rate-limit/credit data, encrypted reasoning, or raw tool payloads.
@@ -63,10 +64,65 @@ from the default Inspector window.
   workspace transcript as relevant, including terminal-only and unreadable
   transcripts whose native event time is unobserved. A partial in-window subset
   must not silently reduce the coverage denominator.
+- AC-11: Session Detail keeps a compact `Usage and context` summary in its
+  right-hand outline. The summary leads with observed total usage and context
+  occupancy, visualizes only token-weighted context categories, supplies an
+  explicit `Other` remainder when categories do not cover the observed used
+  context, and never stacks overlapping input/cache/reasoning accounting as if
+  it were context composition.
+- AC-12: A labelled `View report` action in that right-hand summary opens a
+  read-only Usage report inside the existing Session Detail shell. It does not
+  nest another modal or expand the narrow outline into the report. The report
+  has a stable host-native URL state (`inspector-view=usage` in Studio and
+  `session-mode=usage` in the standalone Inspector) and a labelled route back
+  to Trace; closing Session Detail retains its existing behavior.
+- AC-13: The Usage report leads with context-window occupancy, then shows the
+  current token-weighted context composition, observed per-inference context
+  progression, usage accounting, bounded context-layer counts, runtime facts,
+  provenance, and the raw-context omission boundary. Missing category,
+  per-inference, runtime, or context-window evidence stays explicitly
+  unavailable and is never reconstructed from a model-name lookup table.
+- AC-14: Studio and standalone Inspector expose the same summary/report
+  semantics, labelled controls, and keyboard-reachable navigation at wide,
+  compact, and narrow layouts. The main Session evidence remains the primary
+  surface until the reviewer explicitly opens the report, and neither surface
+  gains document-level horizontal overflow or browser console/page errors.
+- AC-15: Qoder assistant usage preserves its observed
+  `message.usage.context_usage_ratio` as context occupancy. A Session-local
+  `contextWindow` may supply the denominator and derived used-token count only
+  when that value was actually retained; otherwise the report shows the
+  observed percentage without inventing an absolute window. Qoder
+  `compactMetadata` records contribute compaction boundaries.
+- AC-16: Claude response usage exposes observed prompt-context tokens as the
+  sum of input, cache-read input, and cache-creation input for that inference.
+  It remains a used-token-only observation when the transcript has no context
+  window, so the report must not infer a model limit or percentage.
+- AC-17: Qoder and Claude tool, Skill, MCP, subagent, system-message, and other
+  activity counts must not be presented as Cursor-style token composition.
+  Category composition remains explicitly unavailable unless a host supplies
+  token-weighted categories; partial context observations still appear in the
+  summary, progression, and provenance views.
+- AC-18: Cursor, Codex, Qoder, and Claude Code project through the same bounded
+  Usage report contract while preserving their distinct evidence capabilities.
+  Cursor may show native token-weighted categories from a composer-matched
+  Context Usage Canvas; Codex may show per-response used/window occupancy and
+  compactions; Qoder may show ratio-only or ratio plus an observed Session
+  window; Claude Code may show observed prompt tokens without a window. A
+  provider with weaker evidence must never inherit fields from a stronger one.
+
+## Provider evidence matrix
+
+| Provider | Current context evidence | Token-weighted composition | Progression | Compaction evidence |
+| --- | --- | --- | --- | --- |
+| Cursor | Native Canvas used/window snapshot, matched by composer id (`host-context-snapshot`) | Native Canvas categories only | Usage counters when retained; Canvas occupancy remains current-snapshot evidence | Unobserved |
+| Codex | `last_token_usage.input_tokens` plus `model_context_window` (`prompt-tokens`) | Unavailable; bounded layer counts are not token categories | Per `token_count` response | `compacted` events |
+| Qoder | `context_usage_ratio`, optionally paired with a retained Session `contextWindow` | Unavailable | Per assistant usage observation | `compactMetadata` records |
+| Claude Code | Input + cache-read input + cache-creation input prompt tokens | Unavailable | Per assistant response | Unobserved |
 
 ## Non-goals
 
-- Treating local Codex, Claude, or Cursor files as stable public host APIs.
+- Treating local Cursor, Codex, Qoder, or Claude Code files as stable public
+  host APIs.
 - Showing or exporting raw system prompts, developer messages, `AGENTS.md`,
   `CLAUDE.md`, rules, skills, tool schemas, or conversation/context item text.
 - Adding billing claims, account balances, rate limits, or estimated cost.
@@ -96,6 +152,20 @@ from the default Inspector window.
 7. Keep Cursor coverage denominators independent of timestamp observability
    when no time filter was requested, and retain the cross-platform fixture as
    the behavioral guard.
+8. Replace the right-outline fact dump with a compact usage/context summary and
+   a `View report` action, while keeping provider accounting and context
+   composition as separate visual dimensions.
+9. Add a Session-scoped Usage report view with context composition, observed
+   per-inference progression, bounded runtime/provenance details, URL state,
+   and an explicit return to Trace in both Inspector hosts.
+10. Normalize Qoder ratio/window/compaction evidence and Claude prompt-token
+    observations without adding a model-window lookup or estimating category
+    tokens from activity counts.
+11. Generalize context projection and UI formatting for percentage-only,
+    used-token-only, and complete used/window observations.
+12. Verify the shared report contract against all four providers and retain a
+    provider-capability matrix so stronger Cursor/Codex evidence never leaks
+    into Qoder/Claude unavailable states.
 
 ## Test and Review Evidence
 
@@ -114,6 +184,27 @@ from the default Inspector window.
 - AC-10: `Cursor facts distinguish absent, terminal-only, and unreadable
   transcripts` must pass on Windows as well as POSIX hosts; the Windows PR job
   is the authoritative receipt for filesystem behavior.
+- AC-11/AC-13: component/report assertions verify `Other` remainder math,
+  non-overlapping accounting labels, honest unavailable states, and omission of
+  raw context. Category widths are derived only from `contextManifest`
+  category estimates plus the observed used/window totals.
+- AC-12/AC-14: focused Studio Playwright and standalone Inspector checks open
+  the right-side `View report` action, verify their host-native Usage route
+  state, return to Trace, exercise keyboard focus, and save
+  wide/compact/narrow screenshots with console/page-error and overflow checks.
+- AC-15: Qoder provider fixtures cover ratio-only usage, an observed Session
+  window, derived used tokens, and compaction metadata. A local schema audit
+  checks the same bounded fields without retaining transcript text.
+- AC-16: Claude provider and Session-summary fixtures verify prompt-context
+  addition across input/cache-read/cache-creation and preserve an unavailable
+  window through report projection.
+- AC-17: report/UI assertions distinguish the three partial-context states and
+  keep category composition unavailable rather than substituting activity
+  counts.
+- AC-18: one report-projection fixture covers Cursor native categories, Codex
+  full used/window occupancy, Qoder percentage-only occupancy, and Claude Code
+  used-only prompt context. Local replay counts are recorded separately from
+  fixture-backed capability evidence.
 - Cross-platform evidence: focused tests must use `node:path` and temporary
   directories, then the full Node 22/24 macOS, Windows, and Ubuntu PR jobs remain
   authoritative for target-platform acceptance.
@@ -147,3 +238,24 @@ from the default Inspector window.
   981 per-inference usage rows for all 13 Claude sessions, whose events supplied
   no context-window field. The current workspace supplied no matching Cursor
   session, so Cursor per-inference/context matching remains fixture-backed.
+- A local Qoder/Claude replay after AC-15 through AC-17 read all 523 discovered
+  Qoder Sessions and all 13 Claude Sessions without a read failure. Qoder
+  produced 27 bounded context manifests: 3 with observed used/window totals, 18
+  percentage-only, and 6 compaction-only. Claude produced 13 used-token-only
+  manifests from 1,741 response observations. Neither provider produced a
+  token-weighted category manifest.
+- The focused provider, Session-folding, and Inspector suites passed 176 tests;
+  the root suite passed 1,552 tests with 2 skipped. Studio built successfully,
+  its focused Playwright file passed 23 tests, and the standalone visual
+  contract passed all 15 surface/viewport combinations.
+- The Canvas preview smoke returned HTTP 200 for both `/health` and
+  `/canvas-module.js`, confirming the TSX transform and SDK runtime endpoint
+  remained available after the UI changes.
+- A four-provider local replay read 93 of 93 Codex Sessions and 8 of 8 Cursor
+  Sessions without a failure. Codex produced 93 bounded context manifests, 91
+  with complete used/window evidence, from 16,352 usage/context observations.
+  No current-workspace Cursor Session matched a Context Usage Canvas. A bounded
+  global Cursor schema audit found 2 valid native snapshots, both with composer,
+  used/window, category, and item fields (14 categories and 177 items total), so
+  current-workspace Cursor context remains fixture-backed rather than borrowed
+  from an unrelated composer.

@@ -582,6 +582,56 @@ test("summarizeSessionEvents aggregates cumulative usage segments and bounded co
   assert.equal(JSON.stringify(summary.dialogue).includes("developer"), false);
 });
 
+test("summarizeSessionEvents keeps provider-specific partial context evidence honest", () => {
+  const repoRoot = path.join(os.tmpdir(), "fixture-repo");
+  const qoder = summarizeSessionEvents(
+    { sessionId: "qoder-partial", firstSeen: null, lastSeen: null },
+    [{
+      type: "model.response.completed",
+      currentContextUsage: {
+        percentFull: 6.0373,
+        basis: "host-context-ratio",
+        source: "qoder-project-context-ratio",
+      },
+      compactionBoundary: true,
+    }],
+    { repoRoot, platform: "qoder", includeDialogue: true },
+  );
+  assert.deepEqual(qoder.contextManifest, {
+    status: "partial",
+    source: "qoder-project-context-ratio",
+    rawTextOmitted: true,
+    percentFull: 6,
+    basis: "host-context-ratio",
+    compactionCount: 1,
+    layers: [],
+    categories: [],
+  });
+
+  const claude = summarizeSessionEvents(
+    { sessionId: "claude-partial", firstSeen: null, lastSeen: null },
+    [{
+      type: "model.response.completed",
+      currentContextUsage: {
+        usedTokens: 152_543,
+        basis: "prompt-tokens",
+        source: "claude-project-transcript",
+      },
+    }],
+    { repoRoot, platform: "claude", includeDialogue: true },
+  );
+  assert.deepEqual(claude.contextManifest, {
+    status: "partial",
+    source: "claude-project-transcript",
+    rawTextOmitted: true,
+    usedTokens: 152_543,
+    basis: "prompt-tokens",
+    compactionCount: 0,
+    layers: [],
+    categories: [],
+  });
+});
+
 test("summarizeSessionEvents projects Entire-style dialogue without raw command payloads", () => {
   const repoRoot = path.resolve("/tmp/fixture-repo");
   const secret = "ghp_abcdefghijklmnop123456";
@@ -762,6 +812,7 @@ test("buildSessionTurns keeps per-inference usage and only same-event context wi
     {
       type: "model.response.completed",
       modelInvocationUsage: { inputTokens: 80, outputTokens: 8, totalTokens: 88 },
+      currentContextUsage: { usedTokens: 145, basis: "prompt-tokens", source: "claude-project-transcript" },
       usageBasis: "model-inference",
       usageSource: "claude-project-transcript",
       timestamp: "2026-08-02T10:01:00Z",
@@ -783,7 +834,7 @@ test("buildSessionTurns keeps per-inference usage and only same-event context wi
   assert.equal(turns[0].eventCount, 3);
   assert.equal(turns[0].response, "Measured.");
   assert.deepEqual(turns[0].steps[1].tokenUsage, { inputTokens: 80, outputTokens: 8, totalTokens: 88 });
-  assert.equal(turns[0].steps[1].contextUsage, undefined);
+  assert.deepEqual(turns[0].steps[1].contextUsage, { usedTokens: 145, basis: "prompt-tokens" });
   assert.deepEqual(turns[0].steps[2].contextUsage, { usedTokens: 120, windowTokens: 400, percentFull: 30 });
 });
 

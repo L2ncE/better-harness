@@ -374,6 +374,7 @@ function contextUsageEvents(sourceRef) {
     currentContextUsage: {
       usedTokens: usage.totalTokensUsed,
       windowTokens: usage.contextWindowSize,
+      basis: "host-context-snapshot",
       source: usage.evidence,
       rawTextOmitted: true,
     },

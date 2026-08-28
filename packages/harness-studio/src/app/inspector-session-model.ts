@@ -11,9 +11,10 @@ export interface InspectorTokenUsage {
 }
 
 export interface InspectorContextWindowUsage {
-  usedTokens: number;
-  windowTokens: number;
-  percentFull: number;
+  usedTokens?: number;
+  windowTokens?: number;
+  percentFull?: number;
+  basis?: string;
 }
 
 export interface InspectorToolCall {
@@ -115,6 +116,7 @@ export interface InspectorSession {
     usedTokens?: number;
     windowTokens?: number;
     percentFull?: number;
+    basis?: string;
     compactionCount?: number;
     layers?: Array<{ kind: string; itemCount: number }>;
     categories?: Array<{ kind: string; label: string; estimatedTokens: number }>;

@@ -662,8 +662,135 @@ test("Inspector projects usage and context metadata without raw context text", (
   });
   const html = renderHarnessInspectorHtml(report);
   assert.match(html, /Usage and context/u);
+  assert.match(html, /View report/u);
+  assert.match(html, /Context Usage Report/u);
+  assert.match(html, /Raw context/u);
+  assert.match(html, /data-session-mode-panel="usage"/u);
   assert.match(html, /Model response/u);
   assert.doesNotMatch(html, new RegExp(secret, "u"));
+});
+
+test("Inspector preserves Cursor, Codex, Qoder, and Claude context capabilities", () => {
+  const report = buildHarnessInspectorReport({
+    repoRoot: "/workspace/repo",
+    featureTree: parseFeatureTreeMarkdown(FEATURE_TREE),
+    sessions: [
+      fixtureSession({
+        sessionId: "cursor-native",
+        platform: "cursor",
+        contextManifest: {
+          status: "observed",
+          source: "cursor-native-context-usage-canvas",
+          usedTokens: 44_600,
+          windowTokens: 272_000,
+          percentFull: 16.4,
+          basis: "host-context-snapshot",
+          compactionCount: 0,
+          layers: [],
+          categories: [
+            { kind: "tools", label: "Tool definitions", estimatedTokens: 12_300 },
+            { kind: "conversation", label: "Conversation", estimatedTokens: 25_000 },
+          ],
+        },
+      }),
+      fixtureSession({
+        sessionId: "codex-full",
+        platform: "codex",
+        contextManifest: {
+          status: "observed",
+          source: "codex-rollout-token-count",
+          usedTokens: 120_000,
+          windowTokens: 200_000,
+          percentFull: 60,
+          basis: "prompt-tokens",
+          compactionCount: 2,
+          layers: [{ kind: "developer-message", itemCount: 1 }],
+          categories: [],
+        },
+      }),
+      fixtureSession({
+        sessionId: "qoder-partial",
+        platform: "qoder",
+        contextManifest: {
+          status: "partial",
+          source: "qoder-project-context-ratio",
+          percentFull: 6.0373,
+          basis: "host-context-ratio",
+          compactionCount: 1,
+          layers: [],
+          categories: [],
+        },
+      }),
+      fixtureSession({
+        sessionId: "claude-partial",
+        platform: "claude",
+        contextManifest: {
+          status: "partial",
+          source: "claude-project-transcript",
+          usedTokens: 152_543,
+          basis: "prompt-tokens",
+          compactionCount: 0,
+          layers: [],
+          categories: [],
+        },
+      }),
+    ],
+    correlation: { sessions: [], commits: [] },
+  });
+
+  const sessions = Object.fromEntries(report.sessions.map((session) => [session.platform, session]));
+  assert.deepEqual(sessions.cursor.contextManifest, {
+    status: "observed",
+    source: "cursor-native-context-usage-canvas",
+    rawTextOmitted: true,
+    compactionCount: 0,
+    layers: [],
+    categories: [
+      { kind: "tools", label: "Tool definitions", estimatedTokens: 12_300 },
+      { kind: "conversation", label: "Conversation", estimatedTokens: 25_000 },
+    ],
+    usedTokens: 44_600,
+    windowTokens: 272_000,
+    percentFull: 16.4,
+    basis: "host-context-snapshot",
+  });
+  assert.deepEqual(sessions.codex.contextManifest, {
+    status: "observed",
+    source: "codex-rollout-token-count",
+    rawTextOmitted: true,
+    compactionCount: 2,
+    layers: [{ kind: "developer-message", itemCount: 1 }],
+    categories: [],
+    usedTokens: 120_000,
+    windowTokens: 200_000,
+    percentFull: 60,
+    basis: "prompt-tokens",
+  });
+  assert.deepEqual(sessions.qoder.contextManifest, {
+    status: "partial",
+    source: "qoder-project-context-ratio",
+    rawTextOmitted: true,
+    compactionCount: 1,
+    layers: [],
+    categories: [],
+    percentFull: 6,
+    basis: "host-context-ratio",
+  });
+  assert.deepEqual(sessions.claude.contextManifest, {
+    status: "partial",
+    source: "claude-project-transcript",
+    rawTextOmitted: true,
+    compactionCount: 0,
+    layers: [],
+    categories: [],
+    usedTokens: 152_543,
+    basis: "prompt-tokens",
+  });
+  const html = renderHarnessInspectorHtml(report);
+  assert.match(html, /Window size unavailable/u);
+  assert.match(html, /Observed prompt tokens/u);
+  assert.match(html, /Tool definitions/u);
+  assert.match(html, /token-weighted categories were not retained/u);
 });
 
 test("declared refs keep platform identity and reject ambiguous commit prefixes", () => {

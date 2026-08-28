@@ -139,6 +139,13 @@ function inferUsage(raw) {
     : null;
 }
 
+function observedPromptTokens(usage) {
+  if (!usage) return null;
+  const fields = ["inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"];
+  if (!fields.some((field) => Object.hasOwn(usage, field))) return null;
+  return fields.reduce((sum, field) => sum + Number(usage[field] ?? 0), 0);
+}
+
 function inferFilePath(toolName, input = {}) {
   if (!/(?:read|edit|write|file|notebook)/i.test(String(toolName ?? ""))) return null;
   return input.file_path ?? input.filePath ?? input.path ?? null;
@@ -197,6 +204,7 @@ function transcriptEvents(raw, sourceRef, options) {
     if (raw?.permissionMode) event.permissionMode = raw.permissionMode;
     events.push(event);
     if (rawType === "assistant" && usage) {
+      const promptTokens = observedPromptTokens(usage);
       events.push({
         ...base,
         type: "model.response.completed",
@@ -207,6 +215,14 @@ function transcriptEvents(raw, sourceRef, options) {
         usageFieldsObserved: true,
         usageBasis: "model-inference",
         usageSource: "claude-project-transcript",
+        ...(promptTokens !== null ? {
+          currentContextUsage: {
+            usedTokens: Math.round(promptTokens),
+            basis: "prompt-tokens",
+            source: "claude-project-transcript",
+            rawTextOmitted: true,
+          },
+        } : {}),
         responseId: raw?.message?.id ?? raw?.uuid ?? null,
         evidenceRef: evidenceRef(raw, sourceRef, "model.response.completed"),
         summary: "Claude model response completed",
