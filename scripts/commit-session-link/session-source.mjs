@@ -1,6 +1,17 @@
 import path from "node:path";
 
-import { buildToolCallTrace, createAnalyzer, privacySafeUserInputText } from "../session-analysis/index.mjs";
+import {
+  buildToolCallTrace,
+  buildUsageReport,
+  createAnalyzer,
+  observedContextUsage,
+  observedProcessingAccounting,
+  observedTokenUsage,
+  privacySafeUserInputText,
+  usageDeduplicationDiagnostics,
+  usageObservationFromEvent,
+  USAGE_TOKEN_FIELDS,
+} from "../session-analysis/index.mjs";
 import { redactTranscriptText } from "./redaction.mjs";
 import { buildSessionTurns } from "./session-view.mjs";
 import { attributeSessionToolName } from "./tool-attribution.mjs";
@@ -97,46 +108,22 @@ function safeDialogueText(value, limit) {
     .replace(WINDOWS_PRIVATE_PATH_RE, "<absolute-path>");
 }
 
-const TOKEN_USAGE_FIELDS = Object.freeze([
-  "inputTokens",
-  "outputTokens",
-  "cacheReadInputTokens",
-  "cacheCreationInputTokens",
-  "reasoningOutputTokens",
-  "totalTokens",
-]);
-
+// Re-normalize a retained Session View step for the portable Session summary.
+// The shared normalizers keep this bounded projection identical to the one the
+// Session View and the Inspector apply.
 function summarizeUsageStep(step) {
-  const tokenUsage = Object.fromEntries(TOKEN_USAGE_FIELDS.flatMap((field) => {
-    if (!Object.hasOwn(step?.tokenUsage ?? {}, field)) return [];
-    const value = Number(step.tokenUsage[field]);
-    return Number.isFinite(value) && value >= 0 ? [[field, Math.round(value)]] : [];
-  }));
-  const usedTokens = Number(step?.contextUsage?.usedTokens);
-  const windowTokens = Number(step?.contextUsage?.windowTokens);
-  const percentFull = Number(step?.contextUsage?.percentFull);
-  const hasUsedTokens = Number.isFinite(usedTokens) && usedTokens >= 0;
-  const hasWindowTokens = Number.isFinite(windowTokens) && windowTokens > 0;
-  const hasPercentFull = Number.isFinite(percentFull) && percentFull >= 0 && percentFull <= 100;
-  const hasContext = hasUsedTokens || hasWindowTokens || hasPercentFull;
-  if (Object.keys(tokenUsage).length === 0 && !hasContext) return null;
+  const tokenUsage = observedTokenUsage(step?.tokenUsage);
+  const contextUsage = observedContextUsage(step?.contextUsage);
+  const processing = observedProcessingAccounting(step);
+  if (!tokenUsage && !contextUsage && !processing.processedTokens) return null;
   return {
     kind: "usage",
-    ...(Object.keys(tokenUsage).length > 0 ? { tokenUsage } : {}),
-    ...(hasContext ? {
-      contextUsage: {
-        ...(hasUsedTokens ? { usedTokens: Math.round(usedTokens) } : {}),
-        ...(hasWindowTokens ? { windowTokens: Math.round(windowTokens) } : {}),
-        ...(hasPercentFull ? { percentFull: Math.round(percentFull * 10) / 10 }
-          : hasUsedTokens && hasWindowTokens
-            ? { percentFull: Math.min(100, Math.round((usedTokens / windowTokens) * 1_000) / 10) }
-            : {}),
-        ...(step?.contextUsage?.basis ? { basis: String(step.contextUsage.basis).slice(0, 40) } : {}),
-      },
-    } : {}),
+    ...(tokenUsage ? { tokenUsage } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
     ...(step?.basis ? { basis: String(step.basis).slice(0, 40) } : {}),
     ...(step?.source ? { source: String(step.source).slice(0, 80) } : {}),
     ...(step?.model ? { model: String(step.model).slice(0, 80) } : {}),
+    ...processing,
     timestamp: step?.timestamp ?? null,
   };
 }
@@ -181,7 +168,7 @@ function summarizeDialogue(events) {
 
 function addTokenUsage(target, usage, observedFields) {
   if (!usage || typeof usage !== "object") return;
-  for (const field of TOKEN_USAGE_FIELDS) {
+  for (const field of USAGE_TOKEN_FIELDS) {
     if (!Object.hasOwn(usage, field)) continue;
     const value = Number(usage[field]);
     if (!Number.isFinite(value) || value < 0) continue;
@@ -341,6 +328,13 @@ export function summarizeSessionEvents(session, events = [], {
     : null;
   const toolActivity = toolTrace ? normalizeToolActivity(toolTrace.calls, requestFacts) : null;
   const dialogue = includeDialogue ? summarizeDialogue(attributedEvents) : null;
+  // Derived from every retained inference, never from the display-bounded
+  // dialogue above, so `actualModelCalls` and the processing totals stay the
+  // Session's real numbers even when Session View caps what it shows.
+  const usageReport = buildUsageReport(
+    attributedEvents.map(usageObservationFromEvent).filter(Boolean),
+    { diagnostics: usageDeduplicationDiagnostics(attributedEvents) },
+  );
   if (toolTrace) {
     toolTrace.calls = toolTrace.calls.map(({ transientInvocationKey: _transientInvocationKey, ...call }) => call);
   }
@@ -356,7 +350,7 @@ export function summarizeSessionEvents(session, events = [], {
   const contextManifestObserved = contextLayers.size > 0 || contextCategories.size > 0
     || hasContextUsedTokens || hasContextWindowTokens || hasContextPercentFull || compactionCount > 0;
   const tokenUsage = usageObserved ? {
-    ...Object.fromEntries(TOKEN_USAGE_FIELDS
+    ...Object.fromEntries(USAGE_TOKEN_FIELDS
       .filter((field) => observedTokenFields.has(field))
       .map((field) => [field, tokenTotals[field] ?? 0])),
     basis: usageBases.size === 1 ? [...usageBases][0] : usageBases.size > 1 ? "mixed" : "model-inference",
@@ -404,6 +398,7 @@ export function summarizeSessionEvents(session, events = [], {
     ...(dialogue ? { dialogue } : {}),
     models: [...models].sort(),
     tokenUsage,
+    usageReport,
     runtime: Object.keys(runtimeMetadata).length > 0 ? runtimeMetadata : null,
     contextManifest,
     timestampBasis: session.timestampBasis ?? (firstSeen !== null || lastSeen !== null ? "native-event" : "unobserved"),

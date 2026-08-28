@@ -632,6 +632,94 @@ test("summarizeSessionEvents keeps provider-specific partial context evidence ho
   });
 });
 
+test("summarizeSessionEvents retains Claude processed usage and dedupe diagnostics (AC-19/AC-20)", () => {
+  const repoRoot = path.join(os.tmpdir(), "fixture-repo");
+  const summary = summarizeSessionEvents(
+    { sessionId: "claude-usage", firstSeen: null, lastSeen: null },
+    [
+      { type: "user", userPrompt: true, userText: "measure it", timestamp: "2026-08-28T01:00:00Z" },
+      {
+        type: "model.response.completed",
+        model: "claude-opus-fixture",
+        modelUsage: { inputTokens: 10, outputTokens: 4, cacheReadInputTokens: 5, cacheCreationInputTokens: 3 },
+        modelInvocationUsage: { inputTokens: 10, outputTokens: 4, cacheReadInputTokens: 5, cacheCreationInputTokens: 3 },
+        currentContextUsage: { usedTokens: 18, basis: "prompt-tokens", source: "claude-project-transcript" },
+        processedTokens: 22,
+        processedTokensBasis: "derived-accounted-usage",
+        usageBasis: "model-inference",
+        usageSource: "claude-project-transcript",
+        usageDeduplication: { duplicateRecordsCollapsed: 2, conflictingDuplicateRecords: 1 },
+        timestamp: "2026-08-28T01:00:01Z",
+      },
+      {
+        type: "model.response.completed",
+        model: "claude-opus-fixture",
+        modelUsage: { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 20, cacheCreationInputTokens: 4 },
+        modelInvocationUsage: { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 20, cacheCreationInputTokens: 4 },
+        currentContextUsage: { usedTokens: 25, basis: "prompt-tokens", source: "claude-project-transcript" },
+        processedTokens: 27,
+        processedTokensBasis: "derived-accounted-usage",
+        usageBasis: "model-inference",
+        usageSource: "claude-project-transcript",
+        timestamp: "2026-08-28T01:00:02Z",
+      },
+    ],
+    { repoRoot, platform: "claude", includeDialogue: true },
+  );
+
+  assert.deepEqual(summary.tokenUsage, {
+    inputTokens: 11,
+    outputTokens: 6,
+    cacheReadInputTokens: 25,
+    cacheCreationInputTokens: 7,
+    basis: "model-inference",
+    source: "claude-project-transcript",
+    coverage: "observed",
+  });
+  assert.deepEqual(summary.dialogue.turns[0].steps.map((step) => step.processedTokens), [22, 27]);
+  assert.equal(summary.contextManifest.usedTokens, 25);
+  assert.equal(summary.usageReport.duplicateRecordsCollapsed, 2);
+  assert.equal(summary.usageReport.conflictingDuplicateRecords, 1);
+  assert.equal(summary.usageReport.actualModelCalls, 2);
+  assert.equal(summary.usageReport.processedTokens, 49);
+  assert.equal(summary.usageReport.netContextDeltaTokens, 7);
+  assert.equal(summary.usageReport.progressionTotalCount, 2);
+  assert.equal(summary.usageReport.progressionTruncated, false);
+});
+
+test("Session usage report stays complete when dialogue progression is display-bounded (AC-21)", () => {
+  const events = [
+    { type: "user", userPrompt: true, userText: "measure the long session", timestamp: "2026-08-28T01:00:00Z" },
+    ...Array.from({ length: 1_100 }, (_, index) => ({
+      type: "model.response.completed",
+      model: "claude-long-fixture",
+      modelUsage: { inputTokens: 0, outputTokens: 1, cacheReadInputTokens: 1_000 + index, cacheCreationInputTokens: 0 },
+      modelInvocationUsage: { inputTokens: 0, outputTokens: 1, cacheReadInputTokens: 1_000 + index, cacheCreationInputTokens: 0 },
+      currentContextUsage: { usedTokens: 1_000 + index, basis: "prompt-tokens", source: "claude-project-transcript" },
+      processedTokens: 1_001 + index,
+      processedTokensBasis: "derived-accounted-usage",
+      usageBasis: "model-inference",
+      usageSource: "claude-project-transcript",
+      timestamp: new Date(Date.parse("2026-08-28T01:00:01Z") + index * 1_000).toISOString(),
+    })),
+  ];
+  const summary = summarizeSessionEvents(
+    { sessionId: "claude-long-usage", firstSeen: null, lastSeen: null },
+    events,
+    { repoRoot: path.join(os.tmpdir(), "fixture-repo"), platform: "claude", includeDialogue: true },
+  );
+
+  assert.equal(summary.usageReport.actualModelCalls, 1_100);
+  assert.equal(summary.usageReport.currentContextTokens, 2_099);
+  assert.equal(summary.usageReport.netContextDeltaTokens, 1_099);
+  assert.equal(summary.usageReport.progressionTotalCount, 1_100);
+  assert.equal(summary.usageReport.progression.length, 1_000);
+  assert.equal(summary.usageReport.progressionTruncated, true);
+  assert.equal(summary.usageReport.progression[0].index, 1);
+  assert.equal(summary.usageReport.progression.at(-1).index, 1_100);
+  assert.ok(summary.dialogue.turns[0].usageEventCount > summary.dialogue.turns[0].steps.length);
+});
+
 test("summarizeSessionEvents projects Entire-style dialogue without raw command payloads", () => {
   const repoRoot = path.resolve("/tmp/fixture-repo");
   const secret = "ghp_abcdefghijklmnop123456";

@@ -1,3 +1,4 @@
+import { observedContextUsage, observedProcessingAccounting, observedTokenUsage } from "../session-analysis/index.mjs";
 import { redactTranscriptText } from "./redaction.mjs";
 import { attributeSessionToolName } from "./tool-attribution.mjs";
 
@@ -85,52 +86,24 @@ function assistantText(event) {
   return cleaned.length > 0 ? cleaned : null;
 }
 
-const TURN_TOKEN_USAGE_FIELDS = Object.freeze([
-  "inputTokens",
-  "outputTokens",
-  "cacheReadInputTokens",
-  "cacheCreationInputTokens",
-  "reasoningOutputTokens",
-  "totalTokens",
-]);
-
+// One usage observation, in the vocabulary Session View steps use. Counter and
+// occupancy normalization is owned by session-analysis so the step, the Session
+// summary, and the Inspector projection cannot drift apart.
 function inferenceUsageStep(event) {
-  const sourceUsage = event?.modelInvocationUsage
-    ?? (event?.usageCumulative === true ? null : event?.modelUsage);
-  const tokenUsage = {};
-  if (sourceUsage && typeof sourceUsage === "object") {
-    for (const field of TURN_TOKEN_USAGE_FIELDS) {
-      if (!Object.hasOwn(sourceUsage, field)) continue;
-      const value = Number(sourceUsage[field]);
-      if (Number.isFinite(value) && value >= 0) tokenUsage[field] = Math.round(value);
-    }
-  }
-  const usedTokens = Number(event?.currentContextUsage?.usedTokens);
-  const windowTokens = Number(event?.currentContextUsage?.windowTokens);
-  const percentFull = Number(event?.currentContextUsage?.percentFull);
-  const hasUsedTokens = Number.isFinite(usedTokens) && usedTokens >= 0;
-  const hasWindowTokens = Number.isFinite(windowTokens) && windowTokens > 0;
-  const hasPercentFull = Number.isFinite(percentFull) && percentFull >= 0 && percentFull <= 100;
-  const hasContext = hasUsedTokens || hasWindowTokens || hasPercentFull;
-  if (Object.keys(tokenUsage).length === 0 && !hasContext) return null;
+  const tokenUsage = observedTokenUsage(event?.modelInvocationUsage
+    ?? (event?.usageCumulative === true ? null : event?.modelUsage));
+  const contextUsage = observedContextUsage(event?.currentContextUsage);
+  const processing = observedProcessingAccounting(event);
+  if (!tokenUsage && !contextUsage && !processing.processedTokens) return null;
   const evidenceSource = event?.usageSource ?? event?.currentContextUsage?.source ?? null;
   return {
     kind: "usage",
-    ...(Object.keys(tokenUsage).length > 0 ? { tokenUsage } : {}),
-    ...(hasContext ? {
-      contextUsage: {
-        ...(hasUsedTokens ? { usedTokens: Math.round(usedTokens) } : {}),
-        ...(hasWindowTokens ? { windowTokens: Math.round(windowTokens) } : {}),
-        ...(hasPercentFull ? { percentFull: Math.round(percentFull * 10) / 10 }
-          : hasUsedTokens && hasWindowTokens
-            ? { percentFull: Math.min(100, Math.round((usedTokens / windowTokens) * 1_000) / 10) }
-            : {}),
-        ...(event?.currentContextUsage?.basis ? { basis: String(event.currentContextUsage.basis) } : {}),
-      },
-    } : {}),
+    ...(tokenUsage ? { tokenUsage } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
     ...(event?.usageBasis ? { basis: String(event.usageBasis) } : {}),
     ...(evidenceSource ? { source: String(evidenceSource) } : {}),
     ...(event?.model ? { model: String(event.model) } : {}),
+    ...processing,
     timestamp: event?.timestamp ?? null,
   };
 }

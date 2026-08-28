@@ -318,6 +318,8 @@ test("Claude provider expands nested tool requests and results without using gen
     source: "claude-project-transcript",
     rawTextOmitted: true,
   });
+  assert.equal(events.find((event) => event.model === "claude-fixture")?.processedTokens, 22);
+  assert.equal(events.find((event) => event.model === "claude-fixture")?.processedTokensBasis, "derived-accounted-usage");
   assert.equal(events.find((event) => event.toolInvocationId === "tool-2")?.filePath, path.join(workspace, "package.json"));
   assert.equal(events.find((event) => event.toolInvocationId === "tool-2" && event.type === "tool.result")?.success, false);
   const insights = await analyzer.analyze({ command: "insights", workspace, home, selection: "all-eligible" });
@@ -329,6 +331,55 @@ test("Claude provider expands nested tool requests and results without using gen
   assert.equal(facts.scope.platform, "claude");
   assert.doesNotMatch(JSON.stringify(facts), new RegExp(sessionId, "u"));
   assert.doesNotMatch(JSON.stringify(facts), new RegExp(home.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
+});
+
+test("Claude provider collapses response usage duplicates before Session accounting (AC-19/AC-20)", async () => {
+  const root = await fixtureRoot("session-claude-usage-dedupe-");
+  const home = path.join(root, ".claude");
+  const workspace = path.join(root, "workspace", "project");
+  const sessionId = "12121212-1212-4121-8121-121212121212";
+  const slug = workspaceToClaudeSlugVariants(workspace)[0];
+  const assistant = (id, timestamp, usage, model = "claude-fixture") => ({
+    type: "assistant",
+    sessionId,
+    cwd: workspace,
+    timestamp,
+    message: { id, role: "assistant", model, usage, content: [{ type: "text", text: `response ${id}` }] },
+  });
+  await writeJsonl(path.join(home, "projects", slug, `${sessionId}.jsonl`), [
+    {
+      type: "user",
+      sessionId,
+      cwd: workspace,
+      timestamp: "2026-08-28T01:00:00.000Z",
+      message: { role: "user", content: [{ type: "text", text: "measure usage" }] },
+    },
+    assistant("response-1", "2026-08-28T01:00:01.000Z", { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 5, cache_creation_input_tokens: 3 }),
+    assistant("response-1", "2026-08-28T01:00:02.000Z", { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 5, cache_creation_input_tokens: 3 }),
+    assistant("response-1", "2026-08-28T01:00:03.000Z", { input_tokens: 10, output_tokens: 4, cache_read_input_tokens: 5, cache_creation_input_tokens: 3 }),
+    assistant("response-zero", "2026-08-28T01:00:04.000Z", { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }),
+    assistant("<synthetic>", "2026-08-28T01:00:05.000Z", { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, "<synthetic>"),
+    assistant("response-2", "2026-08-28T01:00:06.000Z", { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 20, cache_creation_input_tokens: 4 }),
+  ]);
+
+  const analyzer = new ClaudeSessionAnalyzer();
+  const scope = await analyzer.resolveScope({ workspace, home });
+  const roots = await analyzer.discoverSourceRoots(scope);
+  const sessions = await analyzer.discoverSessions(scope, roots);
+  const events = await analyzer.readSession(sessions[0], scope, { includeContent: true, includeUserText: true });
+  const responses = events.filter((event) => event.type === "model.response.completed");
+
+  assert.equal(responses.length, 2);
+  assert.equal(responses[0].responseId, "response-1");
+  assert.equal(responses[0].modelUsage.outputTokens, 4);
+  assert.equal(responses[0].processedTokens, 22);
+  assert.deepEqual(responses[0].usageDeduplication, {
+    duplicateRecordsCollapsed: 2,
+    conflictingDuplicateRecords: 1,
+  });
+  assert.equal(responses[1].responseId, "response-2");
+  assert.equal(responses[1].currentContextUsage.usedTokens, 25);
+  assert.equal(responses[1].processedTokens, 27);
 });
 
 test("Claude provider rejects a transcript whose embedded cwd belongs to another workspace", async () => {

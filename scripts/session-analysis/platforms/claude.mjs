@@ -19,6 +19,7 @@ import {
 } from "../provider-runner.mjs";
 import { parseResultFacts } from "../result-facts.mjs";
 import { mergeTimeRange, normalizeCliDate, normalizeTimestamp, timestampMillis, withinTimeRange } from "../time.mjs";
+import { additiveUsageAccounting, collapseDuplicateResponseRecords, promptContextTokens } from "../usage-records.mjs";
 import { WORKSPACE_CWD_MATCH, classifyWorkspaceCwd } from "../workspace-match.mjs";
 
 function isWorkspaceMatch(candidate, workspace) {
@@ -139,13 +140,6 @@ function inferUsage(raw) {
     : null;
 }
 
-function observedPromptTokens(usage) {
-  if (!usage) return null;
-  const fields = ["inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"];
-  if (!fields.some((field) => Object.hasOwn(usage, field))) return null;
-  return fields.reduce((sum, field) => sum + Number(usage[field] ?? 0), 0);
-}
-
 function inferFilePath(toolName, input = {}) {
   if (!/(?:read|edit|write|file|notebook)/i.test(String(toolName ?? ""))) return null;
   return input.file_path ?? input.filePath ?? input.path ?? null;
@@ -204,7 +198,7 @@ function transcriptEvents(raw, sourceRef, options) {
     if (raw?.permissionMode) event.permissionMode = raw.permissionMode;
     events.push(event);
     if (rawType === "assistant" && usage) {
-      const promptTokens = observedPromptTokens(usage);
+      const promptTokens = promptContextTokens(usage);
       events.push({
         ...base,
         type: "model.response.completed",
@@ -215,9 +209,12 @@ function transcriptEvents(raw, sourceRef, options) {
         usageFieldsObserved: true,
         usageBasis: "model-inference",
         usageSource: "claude-project-transcript",
+        // Claude reports non-overlapping input, cache, and output lanes, so the
+        // shared additive accounting applies.
+        ...additiveUsageAccounting(usage),
         ...(promptTokens !== null ? {
           currentContextUsage: {
-            usedTokens: Math.round(promptTokens),
+            usedTokens: promptTokens,
             basis: "prompt-tokens",
             source: "claude-project-transcript",
             rawTextOmitted: true,
@@ -411,7 +408,7 @@ function finalizeSession(session) {
   );
 }
 
-function dedupeEvents(events) {
+function dedupeToolLifecycleRecords(events) {
   const seen = new Set();
   return events.filter((event) => {
     const key = event.toolInvocationId && event.lifecyclePhase
@@ -421,6 +418,17 @@ function dedupeEvents(events) {
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
+  });
+}
+
+function dedupeEvents(events) {
+  // Claude rewrites one assistant record as its counters settle, so the latest
+  // payload is the canonical one; synthetic and all-zero placeholders stand for
+  // responses the host never accounted for. Duplicate counts stay as evidence.
+  return collapseDuplicateResponseRecords(dedupeToolLifecycleRecords(events), {
+    canonical: "latest",
+    dropSyntheticRecords: true,
+    countDiagnostics: true,
   });
 }
 

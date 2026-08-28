@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { redactTranscriptText } from "../commit-session-link/index.mjs";
+import { observedContextUsage, observedProcessingAccounting, observedTokenUsage, projectUsageReport } from "../session-analysis/index.mjs";
 import { emptyFeatureTree } from "./feature-tree.mjs";
 
 export const HARNESS_INSPECTOR_REPORT_KIND = "HarnessInspectorReportV1";
@@ -260,9 +261,10 @@ function projectDialogue(dialogue, toolActivity) {
         return text ? { kind: "note", text } : null;
       }
       if (step?.kind === "usage") {
-        const tokenUsage = projectInvocationTokenUsage(step.tokenUsage);
+        const tokenUsage = observedTokenUsage(step.tokenUsage);
         const contextUsage = projectContextWindowUsage(step.contextUsage);
-        if (!tokenUsage && !contextUsage) return null;
+        const processing = observedProcessingAccounting(step, { boundText: safeText });
+        if (!tokenUsage && !contextUsage && !processing.processedTokens) return null;
         return {
           kind: "usage",
           ...(tokenUsage ? { tokenUsage } : {}),
@@ -270,6 +272,7 @@ function projectDialogue(dialogue, toolActivity) {
           ...(step.basis ? { basis: safeText(step.basis, 40) } : {}),
           ...(step.source ? { source: safeText(step.source, 80) } : {}),
           ...(step.model ? { model: safeText(step.model, 80) } : {}),
+          ...processing,
           timestamp: step.timestamp ?? null,
         };
       }
@@ -400,40 +403,9 @@ function projectTokenUsage(usage) {
   return projected;
 }
 
-function projectInvocationTokenUsage(usage) {
-  if (!usage || typeof usage !== "object") return null;
-  const projected = {};
-  for (const field of [
-    "inputTokens",
-    "outputTokens",
-    "cacheReadInputTokens",
-    "cacheCreationInputTokens",
-    "reasoningOutputTokens",
-    "totalTokens",
-  ]) {
-    if (Object.hasOwn(usage, field)) projected[field] = nonNegativeNumber(usage[field]);
-  }
-  return Object.keys(projected).length > 0 ? projected : null;
-}
-
+// Binds this surface's redactor to the shared occupancy normalizer.
 function projectContextWindowUsage(usage) {
-  if (!usage || typeof usage !== "object") return null;
-  const usedTokens = Number(usage.usedTokens);
-  const windowTokens = Number(usage.windowTokens);
-  const percentFull = Number(usage.percentFull);
-  const hasUsedTokens = Number.isFinite(usedTokens) && usedTokens >= 0;
-  const hasWindowTokens = Number.isFinite(windowTokens) && windowTokens > 0;
-  const hasPercentFull = Number.isFinite(percentFull) && percentFull >= 0 && percentFull <= 100;
-  if (!hasUsedTokens && !hasWindowTokens && !hasPercentFull) return null;
-  return {
-    ...(hasUsedTokens ? { usedTokens: Math.round(usedTokens) } : {}),
-    ...(hasWindowTokens ? { windowTokens: Math.round(windowTokens) } : {}),
-    ...(hasPercentFull ? { percentFull: Math.round(percentFull * 10) / 10 }
-      : hasUsedTokens && hasWindowTokens
-        ? { percentFull: Math.min(100, Math.round((usedTokens / windowTokens) * 1_000) / 10) }
-        : {}),
-    ...(usage.basis ? { basis: safeText(usage.basis, 40) } : {}),
-  };
+  return observedContextUsage(usage, { boundText: safeText });
 }
 
 function projectRuntime(runtime) {
@@ -478,6 +450,7 @@ function projectSession(session) {
     calls: toolTrace.calls.map((call) => ({ ...call, family: "other" })),
   });
   const dialogue = projectDialogue(session.dialogue, toolActivity);
+  const tokenUsage = projectTokenUsage(session.tokenUsage);
   const prompts = bindPromptsToTurns((session.prompts ?? []).map((prompt, index) => ({
     id: `${sessionId}:prompt:${index + 1}`,
     text: safeText(prompt.text, 500, "Prompt unavailable after privacy filtering"),
@@ -503,7 +476,14 @@ function projectSession(session) {
     assistantMessageCount: Number(session.assistantMessageCount) || 0,
     fileEditCount: Number(session.fileEditCount) || 0,
     models: (session.models ?? []).map((model) => safeText(model, 80)).filter(Boolean),
-    tokenUsage: projectTokenUsage(session.tokenUsage),
+    tokenUsage,
+    // Bounded projection only. The Session that produced this report already
+    // counted every inference; recomputing here from the capped dialogue would
+    // quote a display artefact under the same field names.
+    usageReport: projectUsageReport(session.usageReport, {
+      providerTotalTokens: tokenUsage?.totalTokens ?? null,
+      boundText: safeText,
+    }),
     runtime: projectRuntime(session.runtime),
     contextManifest: projectContextManifest(session.contextManifest),
     timestampBasis: ["native-event", "native-metadata", "source-file-mtime", "unobserved"].includes(session.timestampBasis)

@@ -39,8 +39,56 @@ export interface InspectorToolCall {
   basis?: string;
   source?: string;
   model?: string;
+  processedTokens?: number;
+  processedTokensBasis?: string;
   timestamp?: string | null;
 }
+
+export interface InspectorUsageProgressionPoint {
+  id: string;
+  index: number;
+  model?: string;
+  contextTokens?: number;
+  windowTokens?: number;
+  percentFull?: number;
+  contextDeltaTokens?: number;
+  processedTokens?: number;
+  outputTokens?: number;
+  boundary: "baseline" | "growth" | "steady" | "shrink" | "model-change" | "unobserved";
+}
+
+export interface InspectorUsageReport {
+  actualModelCalls: number;
+  duplicateRecordsCollapsed: number;
+  conflictingDuplicateRecords: number;
+  currentContextTokens?: number;
+  baselineContextTokens?: number;
+  netContextDeltaTokens?: number;
+  contextResetCount: number;
+  modelBoundaryCount: number;
+  processedTokens?: number;
+  processedTokensBasis?: string;
+  processedCoverage?: "observed" | "partial";
+  providerTotalTokens?: number;
+  progressionTotalCount: number;
+  progressionTruncated: boolean;
+  progression: InspectorUsageProgressionPoint[];
+}
+
+// Mirrors EMPTY_USAGE_REPORT in scripts/session-analysis/usage-progression.mjs.
+// A Session projected by the current report model always carries a usage
+// report; this covers older persisted reports without letting each view invent
+// its own "nothing observed" shape.
+export const EMPTY_USAGE_REPORT: InspectorUsageReport = {
+  actualModelCalls: 0,
+  duplicateRecordsCollapsed: 0,
+  conflictingDuplicateRecords: 0,
+  contextResetCount: 0,
+  modelBoundaryCount: 0,
+  progressionTotalCount: 0,
+  progressionTruncated: false,
+  progression: [],
+};
 
 export interface InspectorTurn {
   index: number;
@@ -108,6 +156,7 @@ export interface InspectorSession {
   prompts?: Array<{ text: string; timestamp?: string | null; turnIndex?: number | null }>;
   models?: string[];
   tokenUsage?: InspectorTokenUsage;
+  usageReport?: InspectorUsageReport;
   runtime?: { modelProvider?: string; cliVersion?: string; effort?: string } | null;
   contextManifest?: {
     status?: "observed" | "partial" | "unobserved";

@@ -18,6 +18,7 @@ import {
   renderHarnessInspectorHtml,
 } from "../../scripts/harness-inspector/index.mjs";
 import { summarizeSessionEvents } from "../../scripts/commit-session-link/index.mjs";
+import { buildUsageReport } from "../../scripts/session-analysis/index.mjs";
 
 const CLI_PATH = fileURLToPath(new URL("../../scripts/harness-inspector/cli.mjs", import.meta.url));
 
@@ -663,11 +664,189 @@ test("Inspector projects usage and context metadata without raw context text", (
   const html = renderHarnessInspectorHtml(report);
   assert.match(html, /Usage and context/u);
   assert.match(html, /View report/u);
-  assert.match(html, /Context Usage Report/u);
+  assert.match(html, /Usage and Context Report/u);
   assert.match(html, /Raw context/u);
   assert.match(html, /data-session-mode-panel="usage"/u);
   assert.match(html, /Model response/u);
   assert.doesNotMatch(html, new RegExp(secret, "u"));
+});
+
+test("Inspector projects the derived Usage report instead of recounting the bounded dialogue (AC-20/AC-21)", () => {
+  const observation = (model, contextTokens, processedTokens, outputTokens) => ({
+    model,
+    contextTokens,
+    processedTokens,
+    processedTokensBasis: "derived-accounted-usage",
+    outputTokens,
+  });
+  const usageStep = (model, contextTokens, processedTokens, outputTokens) => ({
+    kind: "usage",
+    model,
+    tokenUsage: { inputTokens: 1, outputTokens, cacheReadInputTokens: contextTokens - 6, cacheCreationInputTokens: 5 },
+    contextUsage: { usedTokens: contextTokens, basis: "prompt-tokens" },
+    processedTokens,
+    processedTokensBasis: "derived-accounted-usage",
+    source: "claude-project-transcript",
+  });
+  const observations = [
+    observation("claude-opus", 100, 112, 12),
+    observation("claude-opus", 125, 132, 7),
+    observation("claude-opus", 120, 126, 6),
+    observation("claude-sonnet", 80, 90, 10),
+    observation("claude-sonnet", 80, 85, 5),
+  ];
+  const report = buildHarnessInspectorReport({
+    repoRoot: "/workspace/repo",
+    featureTree: parseFeatureTreeMarkdown(FEATURE_TREE),
+    sessions: [fixtureSession({
+      platform: "claude",
+      models: ["claude-opus", "claude-sonnet"],
+      usageReport: buildUsageReport(observations, {
+        diagnostics: { duplicateRecordsCollapsed: 3, conflictingDuplicateRecords: 1 },
+      }),
+      tokenUsage: {
+        inputTokens: 5,
+        outputTokens: 42,
+        cacheReadInputTokens: 475,
+        cacheCreationInputTokens: 25,
+        basis: "model-inference",
+        source: "claude-project-transcript",
+        coverage: "observed",
+      },
+      contextManifest: {
+        status: "partial",
+        source: "claude-project-transcript",
+        usedTokens: 80,
+        basis: "prompt-tokens",
+        compactionCount: 0,
+        layers: [],
+        categories: [],
+      },
+      // Session View retains only part of a long turn. The report must still
+      // quote the Session's real call count, not what the dialogue shows.
+      dialogue: {
+        truncated: false,
+        turns: [{
+          index: 1,
+          prompt: { text: "Inspect Claude usage", timestamp: "2026-08-12T08:00:00.000Z" },
+          steps: [usageStep("claude-opus", 100, 112, 12), usageStep("claude-opus", 125, 132, 7)],
+          usageEventCount: 5,
+          eventCount: 5,
+          shownEventCount: 2,
+          toolCallCount: 0,
+          response: "Measured.",
+          responseStatus: "retained",
+        }],
+      },
+    })],
+    correlation: fixtureCorrelation(),
+  });
+
+  assert.deepEqual(report.sessions[0].usageReport, {
+    actualModelCalls: 5,
+    duplicateRecordsCollapsed: 3,
+    conflictingDuplicateRecords: 1,
+    currentContextTokens: 80,
+    baselineContextTokens: 100,
+    contextResetCount: 1,
+    modelBoundaryCount: 1,
+    processedTokens: 545,
+    processedTokensBasis: "derived-accounted-usage",
+    processedCoverage: "observed",
+    progressionTotalCount: 5,
+    progressionTruncated: false,
+    progression: [
+      { id: "R1", index: 1, model: "claude-opus", contextTokens: 100, processedTokens: 112, outputTokens: 12, boundary: "baseline" },
+      { id: "R2", index: 2, model: "claude-opus", contextTokens: 125, contextDeltaTokens: 25, processedTokens: 132, outputTokens: 7, boundary: "growth" },
+      { id: "R3", index: 3, model: "claude-opus", contextTokens: 120, contextDeltaTokens: -5, processedTokens: 126, outputTokens: 6, boundary: "shrink" },
+      { id: "R4", index: 4, model: "claude-sonnet", contextTokens: 80, processedTokens: 90, outputTokens: 10, boundary: "model-change" },
+      { id: "R5", index: 5, model: "claude-sonnet", contextTokens: 80, contextDeltaTokens: 0, processedTokens: 85, outputTokens: 5, boundary: "steady" },
+    ],
+  });
+  assert.equal(Object.hasOwn(report.sessions[0].usageReport, "netContextDeltaTokens"), false);
+  assert.equal(Object.hasOwn(report.sessions[0].usageReport, "providerTotalTokens"), false);
+  assert.equal(Object.hasOwn(report.sessions[0], "usageDiagnostics"), false);
+});
+
+test("Inspector answers a Session without usage evidence with the shared empty report", () => {
+  const report = buildHarnessInspectorReport({
+    repoRoot: "/workspace/repo",
+    featureTree: parseFeatureTreeMarkdown(FEATURE_TREE),
+    sessions: [fixtureSession({ platform: "claude" })],
+    correlation: fixtureCorrelation(),
+  });
+
+  assert.deepEqual(report.sessions[0].usageReport, {
+    actualModelCalls: 0,
+    duplicateRecordsCollapsed: 0,
+    conflictingDuplicateRecords: 0,
+    contextResetCount: 0,
+    modelBoundaryCount: 0,
+    progressionTotalCount: 0,
+    progressionTruncated: false,
+    progression: [],
+  });
+});
+
+test("Inspector projects a complete derived usage report without coercing missing evidence (AC-21)", () => {
+  const report = buildHarnessInspectorReport({
+    repoRoot: "/workspace/repo",
+    featureTree: parseFeatureTreeMarkdown(FEATURE_TREE),
+    sessions: [fixtureSession({
+      platform: "claude",
+
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheReadInputTokens: 100,
+        totalTokens: 115,
+        basis: "model-inference",
+        source: "claude-project-transcript",
+        coverage: "observed",
+      },
+      usageReport: {
+        actualModelCalls: 1_100,
+        duplicateRecordsCollapsed: 177,
+        conflictingDuplicateRecords: 0,
+        currentContextTokens: 370_640,
+        baselineContextTokens: 47_153,
+        netContextDeltaTokens: 323_487,
+        contextResetCount: 1,
+        modelBoundaryCount: 0,
+        processedTokens: 73_088_320,
+        processedTokensBasis: "derived-accounted-usage",
+        processedCoverage: "observed",
+        progressionTotalCount: 1_100,
+        progressionTruncated: true,
+        progression: [
+          { index: 1, model: "claude-opus", contextTokens: 47_153, contextDeltaTokens: null, processedTokens: null, outputTokens: null, boundary: "baseline" },
+          { index: 1_100, model: "claude-opus", contextTokens: 370_640, contextDeltaTokens: 237, processedTokens: 370_877, outputTokens: 237, boundary: "growth" },
+        ],
+      },
+    })],
+    correlation: fixtureCorrelation(),
+  });
+
+  assert.deepEqual(report.sessions[0].usageReport, {
+    actualModelCalls: 1_100,
+    duplicateRecordsCollapsed: 177,
+    conflictingDuplicateRecords: 0,
+    currentContextTokens: 370_640,
+    baselineContextTokens: 47_153,
+    netContextDeltaTokens: 323_487,
+    contextResetCount: 1,
+    modelBoundaryCount: 0,
+    processedTokens: 73_088_320,
+    processedTokensBasis: "derived-accounted-usage",
+    processedCoverage: "observed",
+    providerTotalTokens: 115,
+    progressionTotalCount: 1_100,
+    progressionTruncated: true,
+    progression: [
+      { id: "R1", index: 1, model: "claude-opus", contextTokens: 47_153, boundary: "baseline" },
+      { id: "R1100", index: 1_100, model: "claude-opus", contextTokens: 370_640, contextDeltaTokens: 237, processedTokens: 370_877, outputTokens: 237, boundary: "growth" },
+    ],
+  });
 });
 
 test("Inspector preserves Cursor, Codex, Qoder, and Claude context capabilities", () => {
@@ -787,8 +966,8 @@ test("Inspector preserves Cursor, Codex, Qoder, and Claude context capabilities"
     basis: "prompt-tokens",
   });
   const html = renderHarnessInspectorHtml(report);
-  assert.match(html, /Window size unavailable/u);
-  assert.match(html, /Observed prompt tokens/u);
+  assert.match(html, /Context window size unavailable/u);
+  assert.match(html, /prompt tokens were observed/u);
   assert.match(html, /Tool definitions/u);
   assert.match(html, /token-weighted categories were not retained/u);
 });

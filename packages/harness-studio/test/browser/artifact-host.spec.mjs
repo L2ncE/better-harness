@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { HarnessRunEmitter } from "@qoder-ai/harness/exec";
 import { buildHarnessInspectorReport, emptyFeatureTree } from "../../../../scripts/harness-inspector/index.mjs";
+import { buildUsageReport } from "../../../../scripts/session-analysis/index.mjs";
 import { startHarnessStudioServer } from "../../dist/server/server.js";
 import { sessionFromRetainedRun } from "../../dist/server/debugger-session-transform.js";
 import { createDocxFixture } from "../docx-fixture.ts";
@@ -150,13 +151,20 @@ test.beforeAll(async () => {
       },
       runtime: { modelProvider: "fixture", cliVersion: "1.0.0", effort: "high" },
       timestampBasis: "native-event",
+      // Derived from the same observations the dialogue renders, through the
+      // shared builder, so the fixture cannot assert numbers the report model
+      // could not produce.
+      usageReport: buildUsageReport([
+        { model: "fixture-model", contextTokens: 25, windowTokens: 100, percentFull: 25, outputTokens: 8 },
+        { model: "fixture-model", contextTokens: 40, windowTokens: 100, percentFull: 40, outputTokens: 10 },
+      ]),
       contextManifest: {
         status: "observed",
         source: "fixture-context-usage",
         rawTextOmitted: true,
-        usedTokens: 25,
+        usedTokens: 40,
         windowTokens: 100,
-        percentFull: 25,
+        percentFull: 40,
         compactionCount: 1,
         layers: [{ kind: "developer-message", itemCount: 2 }],
         categories: [{ kind: "rules", label: "Rules", estimatedTokens: 10 }],
@@ -961,14 +969,18 @@ test("opens a project workspace and compares Inspector-discovered Sessions", asy
   await inspector.locator("details.session-filter-disclosure > summary").click();
   await expect(inspector.getByRole("checkbox", { name: /Tool calls/u })).toBeChecked();
   const usageSummary = inspector.locator(".session-usage-summary");
-  await expect(usageSummary).toContainText("198 total tokens");
-  await expect(usageSummary).toContainText("25 / 100");
+  await expect(usageSummary).toContainText(/Provider total\s*198/u);
+  await expect(usageSummary).toContainText(/Current context\s*40/u);
+  await expect(usageSummary).toContainText("40 / 100");
   await usageSummary.getByRole("button", { name: "View report" }).click();
   await expect(page).toHaveURL(/inspector-view=usage/u);
   const usageReport = inspector.getByRole("region", { name: "Usage report" });
-  await expect(usageReport).toContainText("Context Usage Report");
+  await expect(usageReport).toContainText("Usage and Context Report");
+  await expect(usageReport).toContainText(/Net context growth\s*\+15/u);
+  await expect(usageReport).toContainText(/Model calls\s*2/u);
+  await expect(usageReport.getByRole("img", { name: /Context progression from 25 to 40 tokens/u })).toBeVisible();
   await expect(usageReport).toContainText(/Rules\s*10/u);
-  await expect(usageReport).toContainText(/Other\s*15/u);
+  await expect(usageReport).toContainText(/Other\s*30/u);
   await expect(usageReport).toContainText(/Raw context\s*omitted/u);
   for (const layout of [
     { name: "wide", width: 1440, height: 900 },

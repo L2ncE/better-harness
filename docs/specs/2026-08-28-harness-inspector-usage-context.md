@@ -65,23 +65,25 @@ from the default Inspector window.
   transcripts whose native event time is unobserved. A partial in-window subset
   must not silently reduce the coverage denominator.
 - AC-11: Session Detail keeps a compact `Usage and context` summary in its
-  right-hand outline. The summary leads with observed total usage and context
-  occupancy, visualizes only token-weighted context categories, supplies an
-  explicit `Other` remainder when categories do not cover the observed used
-  context, and never stacks overlapping input/cache/reasoning accounting as if
-  it were context composition.
+  right-hand outline. The summary leads with current context, comparable net
+  context growth, derived Session processing, and unique model-call count;
+  visualizes only token-weighted context categories; supplies an explicit
+  `Other` remainder when categories do not cover the observed used context; and
+  never stacks overlapping input/cache/reasoning accounting as if it were
+  context composition.
 - AC-12: A labelled `View report` action in that right-hand summary opens a
   read-only Usage report inside the existing Session Detail shell. It does not
   nest another modal or expand the narrow outline into the report. The report
   has a stable host-native URL state (`inspector-view=usage` in Studio and
   `session-mode=usage` in the standalone Inspector) and a labelled route back
   to Trace; closing Session Detail retains its existing behavior.
-- AC-13: The Usage report leads with context-window occupancy, then shows the
-  current token-weighted context composition, observed per-inference context
-  progression, usage accounting, bounded context-layer counts, runtime facts,
-  provenance, and the raw-context omission boundary. Missing category,
-  per-inference, runtime, or context-window evidence stays explicitly
-  unavailable and is never reconstructed from a model-name lookup table.
+- AC-13: The Usage report leads with context-window occupancy, then shows
+  observed per-inference context progression, separate processing accounting,
+  the current token-weighted context composition when retained, provider
+  accounting, bounded context-layer counts, runtime facts, provenance, and the
+  raw-context omission boundary. Missing category, per-inference, runtime, or
+  context-window evidence stays explicitly unavailable and is never
+  reconstructed from a model-name lookup table.
 - AC-14: Studio and standalone Inspector expose the same summary/report
   semantics, labelled controls, and keyboard-reachable navigation at wide,
   compact, and narrow layouts. The main Session evidence remains the primary
@@ -109,6 +111,30 @@ from the default Inspector window.
   compactions; Qoder may show ratio-only or ratio plus an observed Session
   window; Claude Code may show observed prompt tokens without a window. A
   provider with weaker evidence must never inherit fields from a stronger one.
+- AC-19: Claude usage observations are unique by Session-local `responseId`.
+  Repeated records for the same response contribute one model call and one set
+  of counters; exact duplicates are collapsed, synthetic or all-zero usage is
+  excluded, and conflicting duplicates select one canonical record while
+  retaining a bounded conflict count. The portable report never exposes the raw
+  provider response id.
+- AC-20: The Usage report keeps provider-reported `totalTokens` distinct from
+  derived processed tokens. For a unique Claude response, processed tokens are
+  the additive sum of input, cache-read input, cache-creation input, and output;
+  the Session processed value is their sum across unique responses and carries
+  the basis `derived-accounted-usage`. It is not labelled as provider total,
+  billing, or cost.
+- AC-21: Context progression reports one point per unique retained inference.
+  Each point may expose the absolute prompt snapshot, the net delta from the
+  previous comparable response, processed tokens for that call, and output.
+  The first point is a baseline, a model change is an incomparable boundary,
+  and a negative same-model delta is labelled context shrink/reset rather than
+  negative consumption. Missing windows are stated once for the report instead
+  of repeated on every progression row.
+- AC-22: The Session Detail summary separates current context, net comparable
+  context growth, derived Session processed tokens, and unique model-call count.
+  The detailed report uses an absolute context-progression chart plus a separate
+  processing-accounting visualization; it never presents cache/input/output
+  accounting as Cursor-style current-context composition.
 
 ## Provider evidence matrix
 
@@ -117,7 +143,7 @@ from the default Inspector window.
 | Cursor | Native Canvas used/window snapshot, matched by composer id (`host-context-snapshot`) | Native Canvas categories only | Usage counters when retained; Canvas occupancy remains current-snapshot evidence | Unobserved |
 | Codex | `last_token_usage.input_tokens` plus `model_context_window` (`prompt-tokens`) | Unavailable; bounded layer counts are not token categories | Per `token_count` response | `compacted` events |
 | Qoder | `context_usage_ratio`, optionally paired with a retained Session `contextWindow` | Unavailable | Per assistant usage observation | `compactMetadata` records |
-| Claude Code | Input + cache-read input + cache-creation input prompt tokens | Unavailable | Per assistant response | Unobserved |
+| Claude Code | Input + cache-read input + cache-creation input prompt tokens | Unavailable | Per unique assistant response | Unobserved |
 
 ## Non-goals
 
@@ -166,6 +192,27 @@ from the default Inspector window.
 12. Verify the shared report contract against all four providers and retain a
     provider-capability matrix so stronger Cursor/Codex evidence never leaks
     into Qoder/Claude unavailable states.
+13. Own response identity, synthetic exclusion, duplicate collapsing, and
+    additive processing derivation in one adapter-facing session-analysis
+    module (`usage-records.mjs`). Claude collapses with a latest-payload
+    canonical record and bounded diagnostics; WorkBuddy collapses with a
+    first-observation canonical record and no diagnostics; `session-efficiency`
+    shares the same identity keys. An adapter whose counters overlap simply does
+    not opt into the additive derivation.
+14. Derive the `usageReport` exactly once, in `usage-progression.mjs`, from the
+    complete normalized event stream. Report and UI layers only project it:
+    `projectUsageReport` bounds and validates but never counts, and a missing
+    report projects to the shared `EMPTY_USAGE_REPORT` so no renderer carries a
+    local default. Deriving the metrics a second time from a display-bounded
+    dialogue is prohibited — it would answer a different question under the same
+    field names.
+15. Replace the unbounded progression list with an accessible context chart and
+    a bounded detail table, then add a separate processing breakdown for hosts
+    whose additive accounting basis is known.
+16. Surface every retained metric or drop it: baseline context, context
+    shrink/reset and model-boundary counts, processing coverage, and whether the
+    retained progression is a sample must all be visible in both Inspector
+    hosts.
 
 ## Test and Review Evidence
 
@@ -205,6 +252,20 @@ from the default Inspector window.
   full used/window occupancy, Qoder percentage-only occupancy, and Claude Code
   used-only prompt context. Local replay counts are recorded separately from
   fixture-backed capability evidence.
+- AC-19/AC-20: Claude fixtures include repeated identical response ids,
+  synthetic/all-zero responses, and one conflicting duplicate. Assertions cover
+  canonical selection, collapsed/conflict counts, unique call count, additive
+  processed totals, and unchanged provider-total semantics. The shared
+  collapsing and derivation helpers carry their own unit coverage for both
+  canonical strategies and for the additive opt-in.
+- AC-21/AC-22: `buildUsageReport` tests cover baseline, growth, zero delta,
+  same-model shrink, and model-change boundaries, plus partial processing
+  coverage and bounded sampling that keeps Session totals complete. A
+  report-model test pins the projection to the derived report while the fixture
+  dialogue is deliberately shorter, so a reintroduced second derivation fails.
+  Studio and standalone visual checks verify the shared summary metrics, chart
+  labelling, bounded detail rows, keyboard reachability, and separation between
+  context composition and processing accounting.
 - Cross-platform evidence: focused tests must use `node:path` and temporary
   directories, then the full Node 22/24 macOS, Windows, and Ubuntu PR jobs remain
   authoritative for target-platform acceptance.
@@ -241,8 +302,11 @@ from the default Inspector window.
 - A local Qoder/Claude replay after AC-15 through AC-17 read all 523 discovered
   Qoder Sessions and all 13 Claude Sessions without a read failure. Qoder
   produced 27 bounded context manifests: 3 with observed used/window totals, 18
-  percentage-only, and 6 compaction-only. Claude produced 13 used-token-only
-  manifests from 1,741 response observations. Neither provider produced a
+  percentage-only, and 6 compaction-only. The first Claude replay counted 1,741
+  raw response observations, but the AC-19 audit found only 966 actual model
+  calls after collapsing 768 repeated records and excluding seven synthetic or
+  all-zero observations. AC-19 through AC-22 now use those deduplicated model
+  calls for Session processing and progression. Neither provider produced a
   token-weighted category manifest.
 - The focused provider, Session-folding, and Inspector suites passed 176 tests;
   the root suite passed 1,552 tests with 2 skipped. Studio built successfully,
@@ -259,3 +323,22 @@ from the default Inspector window.
   used/window, category, and item fields (14 categories and 177 items total), so
   current-workspace Cursor context remains fixture-backed rather than borrowed
   from an unrelated composer.
+- The AC-19 through AC-22 focused provider, Session-folding, and report suites
+  passed 133 tests. A display-bounded 1,100-response fixture retained complete
+  Session metrics and a 1,000-point progression sample with both endpoints.
+- A real four-provider render of the current workspace discovered 475 Qoder,
+  13 Claude Code, 8 Cursor, and 66 Codex source Sessions; the workspace filter
+  retained 77 Qoder, 4 Claude Code, no matching Cursor, and 19 Codex Sessions.
+  One long Claude Code Session projected 312 unique model calls after collapsing
+  177 duplicate records, with a 47,153-token baseline, 370,640-token current
+  context, 323,487-token net growth, one shrink/reset, and 73,088,320 derived
+  processed tokens.
+- The focused native Studio Playwright scenario passed after opening the
+  right-outline `View report` entry and checking the detailed Usage report at
+  1440x900, 1024x768, and 390x844. The standalone visual contract passed all 15
+  surface/layout combinations with zero below-floor text, unreachable clipping,
+  page/console errors, or document-level horizontal overflow.
+- The final repository Vitest run passed 1,557 tests with 2 skipped; the native
+  Studio suite rebuilt successfully and passed all 293 tests. JavaScript syntax,
+  TypeScript/build output, `git diff --check`, and the Canvas preview `/health`
+  and `/canvas-module.js` endpoints also passed.

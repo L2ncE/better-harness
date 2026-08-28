@@ -1,3 +1,4 @@
+import { buildUsageReport } from "../session-analysis/index.mjs";
 import { parseFeatureTreeMarkdown } from "./feature-tree.mjs";
 import { buildHarnessInspectorReport } from "./report-model.mjs";
 import { renderHarnessInspectorHtml } from "./render-html.mjs";
@@ -82,24 +83,35 @@ function session({
 }) {
   const files = [...new Set(calls.flatMap((item) => item.filePaths ?? []))];
   const steps = [];
+  // The demo Session derives its usage report from the same observations it
+  // renders, through the shared builder, so the fixture cannot describe a
+  // Session the report model could not have produced.
+  const usageObservations = [];
   const usageStep = (index) => {
     const inputTokens = 640 + (index * 220);
     const outputTokens = 120 + (index * 40);
+    const cacheReadInputTokens = 180 + (index * 30);
     const usedTokens = 2_400 + (index * 950);
+    const percentFull = Math.round((usedTokens / 16_000) * 1_000) / 10;
+    usageObservations.push({
+      model,
+      contextTokens: usedTokens,
+      windowTokens: 16_000,
+      percentFull,
+      processedTokens: inputTokens + cacheReadInputTokens + outputTokens,
+      processedTokensBasis: "derived-accounted-usage",
+      outputTokens,
+    });
     return {
       kind: "usage",
       tokenUsage: {
         inputTokens,
         outputTokens,
-        cacheReadInputTokens: 180 + (index * 30),
+        cacheReadInputTokens,
         reasoningOutputTokens: 40 + (index * 12),
         totalTokens: inputTokens + outputTokens,
       },
-      contextUsage: {
-        usedTokens,
-        windowTokens: 16_000,
-        percentFull: Math.round((usedTokens / 16_000) * 1_000) / 10,
-      },
+      contextUsage: { usedTokens, windowTokens: 16_000, percentFull },
       source: "public-demo-fixture",
       model,
     };
@@ -128,6 +140,7 @@ function session({
     toolCallCount: calls.length,
     fileEditCount: calls.filter((item) => item.operation === "edit-files").length,
     models: [model],
+    usageReport: buildUsageReport(usageObservations),
     tokenUsage: {
       inputTokens: 2_400,
       outputTokens: 980,
