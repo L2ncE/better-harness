@@ -4,7 +4,7 @@
 
 - Spec ID: `pi-native-extension`
 - Story: #123
-- Status: Draft
+- Status: Accepted
 
 ## Intent
 
@@ -16,7 +16,7 @@ current Pi session for reconciliation and rendering. Orchestration is
 Pi-private; evidence collection and report semantics stay in the canonical
 `scripts/` tree.
 
-## Open Decision: Host-Runtime Dependency
+## Decision: Host-Runtime Dependency
 
 The #72 extension imported the shared host-runtime contract
 (`hostDoctor`/`prepareHostRun`/`verifyHostRun`) introduced by that same PR, and
@@ -24,7 +24,7 @@ that contract is not on `main` and currently has no owner. Options:
 
 - **A:** wait for lane 1 (the shared host-runtime contract) to land separately
   and build the extension on it.
-- **B (recommended):** implement the orchestration the Pi extension needs as
+- **B (confirmed):** implement the orchestration the Pi extension needs as
   Pi-private code inside `extensions/pi/`, calling existing `main` contracts
   (`scripts/` capability exports) for evidence collection and rendering. No
   shared contract is introduced and no part of lane 1's broader host-neutral
@@ -38,7 +38,12 @@ spawning RPC subprocesses. Process-level isolation is harder and more auditable
 (fake-child tests can assert every isolation flag directly), so subprocess RPC
 stays the boundary.
 
-[NEEDS CLARIFICATION: maintainer to confirm Option B during spec review.]
+[Confirmed by the maintainer on 2026-08-28 in the spec review
+(<https://github.com/QoderAI/better-harness/pull/125#issuecomment-5450341625>):
+Option B is accepted; there is no need to wait for the shared host runtime.
+"Please keep the Pi extension limited to RPC orchestration and lifecycle
+management, while reusing the canonical evidence, lane semantics, schema, and
+rendering contracts."]
 
 ## Acceptance Scenarios
 
